@@ -16,6 +16,20 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+var allowedOrigins = builder.Environment.IsDevelopment()
+    ? new[] { "https://localhost:4200", "https://wwww.khulafx.com" }
+    : new[] { "https://wwww.khulafx.com" };
+
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowAngular", policy =>
+    {
+        policy.WithOrigins(allowedOrigins)
+              .AllowAnyMethod()
+              .AllowAnyHeader()
+              .AllowCredentials();
+    });
+});
 
 // Configure CORS for Angular app
 builder.Services.AddCors(options =>
