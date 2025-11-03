@@ -22,7 +22,7 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowAngular", policy =>
     {
-        policy.WithOrigins("https://localhost:4200")
+        policy.WithOrigins("https://localhost:4200","https://www.khulafx.com")
               .AllowAnyMethod()
               .AllowAnyHeader()
               .AllowCredentials();
