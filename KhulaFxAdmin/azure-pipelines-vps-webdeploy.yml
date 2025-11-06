@@ -1,0 +1,404 @@
+# Azure Pipeline for KhulaFxAdmin - VPS Web Deployer
+# Deploys to VPS at 108.181.161.170 using Web Deployer
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - 'KhulaFxAdmin/**'
+      - 'KhulaFxAdminNew/**'
+
+pool:
+  vmImage: 'windows-latest'
+
+variables:
+  buildConfiguration: 'Release'
+  dotnetVersion: '8.0.x'
+  nodeVersion: '20.x'
+  vpsServer: '108.181.161.170'
+  deployUser: 'deployer'
+  # Sensitive values in Azure DevOps Library:
+  # - DEPLOY_PASSWORD
+  # - TELEGRAM_BOT_TOKEN  
+  # - TELEGRAM_CHAT_ID
+
+stages:
+  - stage: NotifyBuildStart
+    displayName: 'Notify Build Started'
+    jobs:
+      - job: SendTelegramNotification
+        displayName: 'Send Start Notification'
+        steps:
+          - task: PowerShell@2
+            displayName: 'Telegram: Build Started'
+            inputs:
+              targetType: 'inline'
+              script: |
+                $message = "🚀 *KhulaFxAdmin Build Started*`n`n"
+                $message += "📦 *Pipeline:* $(Build.DefinitionName)`n"
+                $message += "🔢 *Build:* $(Build.BuildNumber)`n"
+                $message += "👤 *Triggered by:* $(Build.RequestedFor)`n"
+                $message += "🌿 *Branch:* $(Build.SourceBranchName)`n"
+                $message += "💬 *Commit:* $(Build.SourceVersionMessage)`n"
+                $message += "🔗 [View Build]($(System.TeamFoundationCollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId))"
+                
+                $body = @{
+                  chat_id = "$(TELEGRAM_CHAT_ID)"
+                  text = $message
+                  parse_mode = "Markdown"
+                } | ConvertTo-Json
+                
+                try {
+                  Invoke-RestMethod -Uri "https://api.telegram.org/bot$(TELEGRAM_BOT_TOKEN)/sendMessage" `
+                    -Method Post -ContentType "application/json" -Body $body
+                } catch {
+                  Write-Warning "Telegram notification failed: $_"
+                }
+
+  - stage: Build
+    displayName: 'Build Applications'
+    dependsOn: NotifyBuildStart
+    jobs:
+      - job: BuildBackend
+        displayName: 'Build .NET Core API'
+        steps:
+          - checkout: self
+            fetchDepth: 1
+
+          - task: UseDotNet@2
+            displayName: 'Install .NET Core SDK'
+            inputs:
+              version: $(dotnetVersion)
+              includePreviewVersions: false
+
+          - task: DotNetCoreCLI@2
+            displayName: 'Restore NuGet Packages'
+            inputs:
+              command: 'restore'
+              projects: '**/KhulaFxAdmin/*.csproj'
+
+          - task: DotNetCoreCLI@2
+            displayName: 'Build Backend'
+            inputs:
+              command: 'build'
+              projects: '**/KhulaFxAdmin/*.csproj'
+              arguments: '--configuration $(buildConfiguration) --no-restore'
+
+          - task: DotNetCoreCLI@2
+            displayName: 'Publish Backend for IIS'
+            inputs:
+              command: 'publish'
+              publishWebProjects: false
+              projects: '**/KhulaFxAdmin/*.csproj'
+              arguments: '--configuration $(buildConfiguration) --output $(Build.ArtifactStagingDirectory)/backend --no-build'
+              zipAfterPublish: false
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Backend Artifacts'
+            inputs:
+              pathToPublish: '$(Build.ArtifactStagingDirectory)/backend'
+              artifactName: 'backend'
+
+      - job: BuildFrontend
+        displayName: 'Build Angular Frontend'
+        steps:
+          - checkout: self
+            fetchDepth: 1
+
+          - task: NodeTool@0
+            displayName: 'Install Node.js'
+            inputs:
+              versionSpec: $(nodeVersion)
+
+          - task: Npm@1
+            displayName: 'npm install'
+            inputs:
+              command: 'install'
+              workingDir: 'KhulaFxAdminNew'
+
+          - task: Npm@1
+            displayName: 'npm build (production)'
+            inputs:
+              command: 'custom'
+              workingDir: 'KhulaFxAdminNew'
+              customCommand: 'run build -- --configuration production'
+
+          - task: PowerShell@2
+            displayName: 'Create Configuration Files'
+            inputs:
+              targetType: 'inline'
+              script: |
+                $distPath = "$(System.DefaultWorkingDirectory)/KhulaFxAdminNew/dist/khula-fx-admin-new/browser"
+                
+                # Create web.config for Angular routing
+                $webConfig = @"
+                <?xml version="1.0" encoding="utf-8"?>
+                <configuration>
+                  <system.webServer>
+                    <rewrite>
+                      <rules>
+                        <rule name="Angular Routes" stopProcessing="true">
+                          <match url=".*" />
+                          <conditions logicalGrouping="MatchAll">
+                            <add input="{REQUEST_FILENAME}" matchType="IsFile" negate="true" />
+                            <add input="{REQUEST_FILENAME}" matchType="IsDirectory" negate="true" />
+                          </conditions>
+                          <action type="Rewrite" url="/" />
+                        </rule>
+                      </rules>
+                    </rewrite>
+                    <httpProtocol>
+                      <customHeaders>
+                        <add name="X-Frame-Options" value="SAMEORIGIN" />
+                        <add name="X-Content-Type-Options" value="nosniff" />
+                        <add name="X-XSS-Protection" value="1; mode=block" />
+                        <add name="X-Robots-Tag" value="noindex, nofollow" />
+                      </customHeaders>
+                    </httpProtocol>
+                    <staticContent>
+                      <mimeMap fileExtension=".json" mimeType="application/json" />
+                      <mimeMap fileExtension=".woff" mimeType="application/font-woff" />
+                      <mimeMap fileExtension=".woff2" mimeType="application/font-woff2" />
+                    </staticContent>
+                  </system.webServer>
+                </configuration>
+                "@
+                
+                # Create robots.txt
+                $robotsTxt = @"
+                User-agent: *
+                Disallow: /
+                
+                User-agent: Googlebot
+                Disallow: /
+                
+                User-agent: Bingbot
+                Disallow: /
+                "@
+                
+                $webConfig | Out-File -FilePath "$distPath/web.config" -Encoding utf8
+                $robotsTxt | Out-File -FilePath "$distPath/robots.txt" -Encoding utf8
+                
+                Write-Host "✅ Configuration files created"
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Frontend Artifacts'
+            inputs:
+              pathToPublish: '$(System.DefaultWorkingDirectory)/KhulaFxAdminNew/dist/khula-fx-admin-new/browser'
+              artifactName: 'frontend'
+
+  - stage: Deploy
+    displayName: 'Deploy to VPS'
+    dependsOn: Build
+    condition: succeeded()
+    jobs:
+      - deployment: DeployToVPS
+        displayName: 'Web Deploy to IIS'
+        environment: 'VPS-Production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: backend
+                  displayName: 'Download Backend Artifacts'
+
+                - download: current
+                  artifact: frontend
+                  displayName: 'Download Frontend Artifacts'
+
+                - task: PowerShell@2
+                  displayName: 'Deploy Backend API'
+                  inputs:
+                    targetType: 'inline'
+                    script: |
+                      Write-Host "========================================" -ForegroundColor Cyan
+                      Write-Host "Deploying Backend API to VPS" -ForegroundColor Cyan
+                      Write-Host "========================================" -ForegroundColor Cyan
+                      
+                      $msdeployPath = "C:\Program Files\IIS\Microsoft Web Deploy V3\msdeploy.exe"
+                      
+                      if (-not (Test-Path $msdeployPath)) {
+                        Write-Error "❌ Web Deploy not found at: $msdeployPath"
+                        exit 1
+                      }
+                      
+                      try {
+                        Write-Host "Source: $(Pipeline.Workspace)/backend"
+                        Write-Host "Target: $(vpsServer) - Default Web Site/api"
+                        Write-Host ""
+                        
+                        & $msdeployPath `
+                          -verb:sync `
+                          -source:contentPath="$(Pipeline.Workspace)/backend" `
+                          -dest:contentPath='Default Web Site/api',ComputerName="https://$(vpsServer):8172/MsDeploy.axd",UserName='$(deployUser)',Password='$(DEPLOY_PASSWORD)',AuthType='Basic' `
+                          -allowUntrusted `
+                          -verbose
+                        
+                        if ($LASTEXITCODE -ne 0) {
+                          Write-Error "❌ Web Deploy failed with exit code: $LASTEXITCODE"
+                          exit $LASTEXITCODE
+                        }
+                        
+                        Write-Host ""
+                        Write-Host "✅ Backend API deployed successfully!" -ForegroundColor Green
+                      }
+                      catch {
+                        Write-Error "❌ Backend deployment failed: $_"
+                        exit 1
+                      }
+
+                - task: PowerShell@2
+                  displayName: 'Deploy Frontend'
+                  inputs:
+                    targetType: 'inline'
+                    script: |
+                      Write-Host "========================================" -ForegroundColor Cyan
+                      Write-Host "Deploying Angular Frontend to VPS" -ForegroundColor Cyan
+                      Write-Host "========================================" -ForegroundColor Cyan
+                      
+                      $msdeployPath = "C:\Program Files\IIS\Microsoft Web Deploy V3\msdeploy.exe"
+                      
+                      try {
+                        Write-Host "Source: $(Pipeline.Workspace)/frontend"
+                        Write-Host "Target: $(vpsServer) - Default Web Site/secure-admin"
+                        Write-Host ""
+                        
+                        & $msdeployPath `
+                          -verb:sync `
+                          -source:contentPath="$(Pipeline.Workspace)/frontend" `
+                          -dest:contentPath='Default Web Site/secure-admin',ComputerName="https://$(vpsServer):8172/MsDeploy.axd",UserName='$(deployUser)',Password='$(DEPLOY_PASSWORD)',AuthType='Basic' `
+                          -allowUntrusted `
+                          -verbose
+                        
+                        if ($LASTEXITCODE -ne 0) {
+                          Write-Error "❌ Web Deploy failed with exit code: $LASTEXITCODE"
+                          exit $LASTEXITCODE
+                        }
+                        
+                        Write-Host ""
+                        Write-Host "✅ Frontend deployed successfully!" -ForegroundColor Green
+                      }
+                      catch {
+                        Write-Error "❌ Frontend deployment failed: $_"
+                        exit 1
+                      }
+
+                - task: PowerShell@2
+                  displayName: 'Verify Deployment'
+                  inputs:
+                    targetType: 'inline'
+                    script: |
+                      Write-Host "========================================" -ForegroundColor Cyan
+                      Write-Host "Verifying Deployment" -ForegroundColor Cyan
+                      Write-Host "========================================" -ForegroundColor Cyan
+                      
+                      Start-Sleep -Seconds 10
+                      
+                      # Test API
+                      Write-Host ""
+                      Write-Host "Testing API..." -ForegroundColor Yellow
+                      try {
+                        $apiUrl = "http://$(vpsServer)/api"
+                        $apiResponse = Invoke-WebRequest -Uri $apiUrl -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
+                        Write-Host "✅ API Status: $($apiResponse.StatusCode)" -ForegroundColor Green
+                      }
+                      catch {
+                        Write-Warning "⚠️ API test: $($_.Exception.Message)"
+                        Write-Host "   This may be normal if API doesn't have a default route" -ForegroundColor Gray
+                      }
+                      
+                      # Test Frontend
+                      Write-Host ""
+                      Write-Host "Testing Frontend..." -ForegroundColor Yellow
+                      try {
+                        $frontendUrl = "http://$(vpsServer)/secure-admin"
+                        $frontendResponse = Invoke-WebRequest -Uri $frontendUrl -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
+                        Write-Host "✅ Frontend Status: $($frontendResponse.StatusCode)" -ForegroundColor Green
+                      }
+                      catch {
+                        Write-Error "❌ Frontend test failed: $($_.Exception.Message)"
+                        exit 1
+                      }
+                      
+                      Write-Host ""
+                      Write-Host "========================================" -ForegroundColor Green
+                      Write-Host "✅ Deployment Verified Successfully!" -ForegroundColor Green
+                      Write-Host "========================================" -ForegroundColor Green
+
+  - stage: NotifySuccess
+    displayName: 'Notify Success'
+    dependsOn: Deploy
+    condition: succeeded()
+    jobs:
+      - job: SendSuccessNotification
+        displayName: 'Send Success Notification'
+        steps:
+          - task: PowerShell@2
+            displayName: 'Telegram: Deployment Success'
+            inputs:
+              targetType: 'inline'
+              script: |
+                $message = "✅ *KhulaFxAdmin Deployed to VPS Successfully!*`n`n"
+                $message += "📦 *Pipeline:* $(Build.DefinitionName)`n"
+                $message += "🔢 *Build:* $(Build.BuildNumber)`n"
+                $message += "👤 *Deployed by:* $(Build.RequestedFor)`n"
+                $message += "🌿 *Branch:* $(Build.SourceBranchName)`n"
+                $message += "💬 *Commit:* $(Build.SourceVersionMessage)`n"
+                $message += "🖥️ *Server:* $(vpsServer)`n"
+                $message += "🌐 *Frontend:* http://$(vpsServer)/secure-admin`n"
+                $message += "⚙️ *API:* http://$(vpsServer)/api`n"
+                $message += "⏱️ *Duration:* $([math]::Round((New-TimeSpan -Start '$(System.PipelineStartTime)' -End (Get-Date)).TotalMinutes, 2)) minutes`n"
+                $message += "🔗 [View Build]($(System.TeamFoundationCollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId))"
+                
+                $body = @{
+                  chat_id = "$(TELEGRAM_CHAT_ID)"
+                  text = $message
+                  parse_mode = "Markdown"
+                } | ConvertTo-Json
+                
+                try {
+                  Invoke-RestMethod -Uri "https://api.telegram.org/bot$(TELEGRAM_BOT_TOKEN)/sendMessage" `
+                    -Method Post -ContentType "application/json" -Body $body
+                } catch {
+                  Write-Warning "Telegram notification failed: $_"
+                }
+
+  - stage: NotifyFailure
+    displayName: 'Notify Failure'
+    dependsOn: 
+      - Build
+      - Deploy
+    condition: failed()
+    jobs:
+      - job: SendFailureNotification
+        displayName: 'Send Failure Notification'
+        steps:
+          - task: PowerShell@2
+            displayName: 'Telegram: Failure Alert'
+            inputs:
+              targetType: 'inline'
+              script: |
+                $message = "❌ *KhulaFxAdmin VPS Deployment FAILED!*`n`n"
+                $message += "📦 *Pipeline:* $(Build.DefinitionName)`n"
+                $message += "🔢 *Build:* $(Build.BuildNumber)`n"
+                $message += "👤 *Triggered by:* $(Build.RequestedFor)`n"
+                $message += "🌿 *Branch:* $(Build.SourceBranchName)`n"
+                $message += "💬 *Commit:* $(Build.SourceVersionMessage)`n"
+                $message += "⏱️ *Failed after:* $([math]::Round((New-TimeSpan -Start '$(System.PipelineStartTime)' -End (Get-Date)).TotalMinutes, 2)) minutes`n"
+                $message += "🔗 [View Logs]($(System.TeamFoundationCollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId))"
+                
+                $body = @{
+                  chat_id = "$(TELEGRAM_CHAT_ID)"
+                  text = $message
+                  parse_mode = "Markdown"
+                } | ConvertTo-Json
+                
+                try {
+                  Invoke-RestMethod -Uri "https://api.telegram.org/bot$(TELEGRAM_BOT_TOKEN)/sendMessage" `
+                    -Method Post -ContentType "application/json" -Body $body
+                } catch {
+                  Write-Warning "Telegram notification failed: $_"
+                }
