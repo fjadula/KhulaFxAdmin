@@ -12,14 +12,7 @@ pool:
   vmImage: 'Default'
 
 variables:
-  buildConfiguration: 'Release'
-  dotnetVersion: '8.0.x'
-  vpsServer: '108.181.161.170'
-  deployUser: 'deployer'
-  # Secrets stored in Azure DevOps Library:
-  # - DEPLOY_PASSWORD
-  # - TELEGRAM_BOT_TOKEN  
-  # - TELEGRAM_CHAT_ID
+  - group: 'Deployment-Secrets'
 
 stages:
   - stage: NotifyStart
