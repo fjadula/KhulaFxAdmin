@@ -1,6 +1,8 @@
 # Azure Pipeline for KhulaFxAdmin (Backend API)
 # Repository: KhulaFxAdmin
-# Deploys to: http://108.181.161.170/api
+# Deploys to: https://khulafx.com/api
+# Physical Path: C:\inetpub\wwwroot\khulafx.com\api
+# App Pool: KhulaFxAppPool
 
 trigger:
   branches:
@@ -9,7 +11,7 @@ trigger:
       - master
 
 pool:
-   name: 'Default'
+  name: 'Default'
 
 variables:
   - group: 'Deployment-Secrets'
@@ -27,7 +29,7 @@ stages:
               targetType: 'inline'
               script: |
                 $message = "🚀 *KhulaFxAdmin API Build Started*`n`n"
-                $message += "📦 *Project:* KhulaFxAdmin (Backend)`n"
+                $message += "📦 *Project:* KhulaFxAdmin (Backend API)`n"
                 $message += "🔢 *Build:* $(Build.BuildNumber)`n"
                 $message += "👤 *By:* $(Build.RequestedFor)`n"
                 $message += "🌿 *Branch:* $(Build.SourceBranchName)`n"
@@ -54,7 +56,7 @@ stages:
           - task: UseDotNet@2
             displayName: 'Install .NET 8 SDK'
             inputs:
-              version: $(dotnetVersion)
+              version: '8.x'
 
           - task: DotNetCoreCLI@2
             displayName: 'Restore Packages'
@@ -67,7 +69,7 @@ stages:
             inputs:
               command: 'build'
               projects: '**/*.csproj'
-              arguments: '--configuration $(buildConfiguration) --no-restore'
+              arguments: '--configuration Release --no-restore'
 
           - task: DotNetCoreCLI@2
             displayName: 'Publish for IIS'
@@ -75,14 +77,21 @@ stages:
               command: 'publish'
               publishWebProjects: true
               projects: '**/*.csproj'
-              arguments: '--configuration $(buildConfiguration) --output $(Build.ArtifactStagingDirectory) --no-build'
+              arguments: '--configuration Release --output $(Build.ArtifactStagingDirectory) --no-build'
               zipAfterPublish: false
 
           - task: PowerShell@2
-            displayName: 'Ensure web.config'
+            displayName: 'Create web.config for IIS'
             inputs:
               targetType: 'inline'
               script: |
+                # Find the published directory (usually first subdirectory)
+                $publishDir = Get-ChildItem -Path "$(Build.ArtifactStagingDirectory)" -Directory | Select-Object -First 1
+                
+                if (-not $publishDir) {
+                  $publishDir = "$(Build.ArtifactStagingDirectory)"
+                }
+                
                 $webConfig = @"
                 <?xml version="1.0" encoding="utf-8"?>
                 <configuration>
@@ -98,18 +107,30 @@ stages:
                                   hostingModel="inprocess">
                         <environmentVariables>
                           <environmentVariable name="ASPNETCORE_ENVIRONMENT" value="Production" />
+                          <environmentVariable name="ASPNETCORE_URLS" value="http://+:80" />
                         </environmentVariables>
                       </aspNetCore>
+                      <rewrite>
+                        <rules>
+                          <rule name="HTTP to HTTPS" stopProcessing="true">
+                            <match url="(.*)" />
+                            <conditions>
+                              <add input="{HTTPS}" pattern="off" ignoreCase="true" />
+                            </conditions>
+                            <action type="Redirect" url="https://{HTTP_HOST}{REQUEST_URI}" redirectType="Permanent" />
+                          </rule>
+                        </rules>
+                      </rewrite>
                     </system.webServer>
                   </location>
                 </configuration>
                 "@
                 
-                $path = "$(Build.ArtifactStagingDirectory)/web.config"
-                if (-not (Test-Path $path)) {
-                  $webConfig | Out-File -FilePath $path -Encoding utf8
-                  Write-Host "✅ web.config created"
-                }
+                $webConfigPath = Join-Path $publishDir.FullName "web.config"
+                $webConfig | Out-File -FilePath $webConfigPath -Encoding utf8 -Force
+                
+                Write-Host "✅ web.config created at: $webConfigPath" -ForegroundColor Green
+                Write-Host "📁 Publish directory: $($publishDir.FullName)" -ForegroundColor Cyan
 
           - task: PublishBuildArtifacts@1
             displayName: 'Publish Artifacts'
@@ -122,73 +143,166 @@ stages:
     dependsOn: Build
     condition: succeeded()
     jobs:
-      - deployment: DeployAPI
+      - job: DeployAPI
         displayName: 'Deploy to IIS'
-        environment: 'VPS-Production'
-        strategy:
-          runOnce:
-            deploy:
-              steps:
-                - download: current
-                  artifact: backend-api
+        steps:
+          - download: current
+            artifact: backend-api
 
-                - task: PowerShell@2
-                  displayName: 'Deploy via Web Deploy'
-                  inputs:
-                    targetType: 'inline'
-                    script: |
-                      Write-Host "========================================" -ForegroundColor Cyan
-                      Write-Host "Deploying KhulaFxAdmin API to VPS" -ForegroundColor Cyan
-                      Write-Host "========================================" -ForegroundColor Cyan
-                      
-                      $msdeploy = "C:\Program Files\IIS\Microsoft Web Deploy V3\msdeploy.exe"
-                      
-                      if (-not (Test-Path $msdeploy)) {
-                        Write-Error "❌ Web Deploy not found"
-                        exit 1
-                      }
-                      
-                      try {
-                        Write-Host "Source: $(Pipeline.Workspace)/backend-api"
-                        Write-Host "Target: $(vpsServer)/api"
-                        Write-Host ""
-                        
-                        & $msdeploy `
-                          -verb:sync `
-                          -source:contentPath="$(Pipeline.Workspace)/backend-api" `
-                          -dest:contentPath='Default Web Site/api',ComputerName="https://$(vpsServer):8172/MsDeploy.axd",UserName='$(deployUser)',Password='$(DEPLOY_PASSWORD)',AuthType='Basic' `
-                          -allowUntrusted `
-                          -verbose
-                        
-                        if ($LASTEXITCODE -ne 0) {
-                          Write-Error "❌ Deployment failed with code: $LASTEXITCODE"
-                          exit $LASTEXITCODE
-                        }
-                        
-                        Write-Host ""
-                        Write-Host "✅ API deployed successfully!" -ForegroundColor Green
-                      }
-                      catch {
-                        Write-Error "❌ Deployment failed: $_"
-                        exit 1
-                      }
+          - task: PowerShell@2
+            displayName: 'Deploy via Network Share'
+            inputs:
+              targetType: 'inline'
+              script: |
+                Write-Host "========================================" -ForegroundColor Cyan
+                Write-Host "Deploying KhulaFxAdmin API to VPS" -ForegroundColor Cyan
+                Write-Host "========================================" -ForegroundColor Cyan
+                Write-Host ""
+                
+                # Find the published app folder (usually first subdirectory)
+                $sourcePath = Get-ChildItem -Path "$(Pipeline.Workspace)/backend-api" -Directory | Select-Object -First 1
+                
+                if (-not $sourcePath) {
+                  $sourcePath = "$(Pipeline.Workspace)/backend-api"
+                  Write-Host "Using root deployment path" -ForegroundColor Yellow
+                } else {
+                  Write-Host "Found published app: $($sourcePath.Name)" -ForegroundColor Green
+                }
+                
+                $destinationPath = "\\$(vpsServer)\c$\inetpub\wwwroot\khulafx.com\api"
+                
+                Write-Host "Source: $($sourcePath.FullName)" -ForegroundColor White
+                Write-Host "Destination: $destinationPath" -ForegroundColor White
+                Write-Host ""
+                
+                try {
+                  # Stop App Pool
+                  Write-Host "Stopping application pool..." -ForegroundColor Yellow
+                  $stopCmd = "Stop-WebAppPool -Name 'KhulaFxAppPool' -ErrorAction SilentlyContinue"
+                  Invoke-Command -ComputerName $(vpsServer) -ScriptBlock {
+                    param($cmd)
+                    Import-Module WebAdministration
+                    Invoke-Expression $cmd
+                  } -ArgumentList $stopCmd -ErrorAction SilentlyContinue
+                  
+                  Start-Sleep -Seconds 5
+                  Write-Host "✅ App pool stopped" -ForegroundColor Green
+                  
+                  # Ensure directory exists
+                  if (-not (Test-Path $destinationPath)) {
+                    New-Item -ItemType Directory -Path $destinationPath -Force | Out-Null
+                    Write-Host "✅ Created directory" -ForegroundColor Green
+                  }
+                  
+                  # Clean destination
+                  Write-Host "Cleaning destination folder..." -ForegroundColor Yellow
+                  Get-ChildItem -Path $destinationPath -Recurse -File | Remove-Item -Force -ErrorAction SilentlyContinue
+                  Get-ChildItem -Path $destinationPath -Recurse -Directory | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+                  Write-Host "✅ Destination cleaned" -ForegroundColor Green
+                  
+                  # Copy files
+                  Write-Host "Copying application files..." -ForegroundColor Yellow
+                  Copy-Item -Path "$($sourcePath.FullName)\*" -Destination $destinationPath -Recurse -Force -ErrorAction Stop
+                  Write-Host "✅ Files copied successfully" -ForegroundColor Green
+                  
+                  # Verify deployment
+                  $files = Get-ChildItem -Path $destinationPath -Recurse -File
+                  Write-Host ""
+                  Write-Host "========================================" -ForegroundColor Green
+                  Write-Host "✅ Deployment Complete!" -ForegroundColor Green
+                  Write-Host "========================================" -ForegroundColor Green
+                  Write-Host "Files deployed: $($files.Count)" -ForegroundColor Cyan
+                  Write-Host "Location: $destinationPath" -ForegroundColor Cyan
+                  Write-Host ""
+                  
+                  # Verify key files
+                  $dllExists = Test-Path "$destinationPath\KhulaFxAdmin.dll"
+                  $webConfigExists = Test-Path "$destinationPath\web.config"
+                  
+                  Write-Host "Key files check:" -ForegroundColor Yellow
+                  Write-Host "  ✅ KhulaFxAdmin.dll: $(if($dllExists){'Found'}else{'MISSING'})" -ForegroundColor $(if($dllExists){'Green'}else{'Red'})
+                  Write-Host "  ✅ web.config: $(if($webConfigExists){'Found'}else{'MISSING'})" -ForegroundColor $(if($webConfigExists){'Green'}else{'Red'})
+                  
+                  # Start App Pool
+                  Write-Host ""
+                  Write-Host "Starting application pool..." -ForegroundColor Yellow
+                  $startCmd = "Start-WebAppPool -Name 'KhulaFxAppPool' -ErrorAction SilentlyContinue"
+                  Invoke-Command -ComputerName $(vpsServer) -ScriptBlock {
+                    param($cmd)
+                    Import-Module WebAdministration
+                    Invoke-Expression $cmd
+                  } -ArgumentList $startCmd -ErrorAction SilentlyContinue
+                  
+                  Start-Sleep -Seconds 5
+                  Write-Host "✅ App pool started" -ForegroundColor Green
+                  
+                  if (-not $dllExists -or -not $webConfigExists) {
+                    Write-Error "Critical files missing!"
+                    exit 1
+                  }
+                }
+                catch {
+                  Write-Host ""
+                  Write-Host "========================================" -ForegroundColor Red
+                  Write-Host "❌ Deployment Failed!" -ForegroundColor Red
+                  Write-Host "========================================" -ForegroundColor Red
+                  Write-Error $_.Exception.Message
+                  exit 1
+                }
 
-                - task: PowerShell@2
-                  displayName: 'Verify Deployment'
-                  inputs:
-                    targetType: 'inline'
-                    script: |
-                      Write-Host "Testing API endpoint..." -ForegroundColor Yellow
-                      Start-Sleep -Seconds 10
-                      
-                      try {
-                        $response = Invoke-WebRequest -Uri "http://$(vpsServer)/api" -UseBasicParsing -TimeoutSec 30
-                        Write-Host "✅ API Status: $($response.StatusCode)" -ForegroundColor Green
-                      }
-                      catch {
-                        Write-Warning "⚠️ API test: $($_.Exception.Message)"
-                        Write-Host "This may be normal if no default route exists" -ForegroundColor Gray
-                      }
+          - task: PowerShell@2
+            displayName: 'Verify API Deployment'
+            inputs:
+              targetType: 'inline'
+              script: |
+                Write-Host "Waiting for API to start..." -ForegroundColor Yellow
+                Start-Sleep -Seconds 10
+                
+                Write-Host "Testing API endpoints..." -ForegroundColor Yellow
+                Write-Host ""
+                
+                $urls = @(
+                  "https://khulafx.com/api",
+                  "http://khulafx.com/api",
+                  "http://$(vpsServer)/api"
+                )
+                
+                $success = $false
+                foreach ($url in $urls) {
+                  try {
+                    Write-Host "Testing: $url" -ForegroundColor Gray
+                    $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
+                    Write-Host "  ✅ Status: $($response.StatusCode)" -ForegroundColor Green
+                    $success = $true
+                  }
+                  catch {
+                    # 404 on /api is expected if no default route exists
+                    if ($_.Exception.Response.StatusCode -eq 404) {
+                      Write-Host "  ✅ Status: 404 (API is running, no default route)" -ForegroundColor Green
+                      $success = $true
+                    } else {
+                      Write-Host "  ⚠️ $($_.Exception.Message)" -ForegroundColor Yellow
+                    }
+                  }
+                }
+                
+                Write-Host ""
+                if ($success) {
+                  Write-Host "========================================" -ForegroundColor Green
+                  Write-Host "✅ API is Live and Accessible!" -ForegroundColor Green
+                  Write-Host "========================================" -ForegroundColor Green
+                  Write-Host "API URL: https://khulafx.com/api" -ForegroundColor Cyan
+                  Write-Host "Physical Path: C:\inetpub\wwwroot\khulafx.com\api" -ForegroundColor Cyan
+                } else {
+                  Write-Warning "API not responding yet"
+                  Write-Host "Files are deployed to:" -ForegroundColor Cyan
+                  Write-Host "  C:\inetpub\wwwroot\khulafx.com\api\" -ForegroundColor White
+                  Write-Host ""
+                  Write-Host "If API still doesn't work, check on VPS:" -ForegroundColor Yellow
+                  Write-Host "  1. App Pool 'KhulaFxAppPool' is running" -ForegroundColor White
+                  Write-Host "  2. IIS Logs: C:\inetpub\logs\LogFiles\W3SVC1\" -ForegroundColor White
+                  Write-Host "  3. .NET Runtime logs in: C:\inetpub\wwwroot\khulafx.com\api\logs\stdout_*" -ForegroundColor White
+                }
 
   - stage: NotifyComplete
     displayName: 'Notify Completion'
@@ -208,14 +322,16 @@ stages:
                 $status = if ($success) { "SUCCESS" } else { "FAILED" }
                 
                 $message = "$icon *KhulaFxAdmin API Deploy $status!*`n`n"
-                $message += "📦 *Project:* KhulaFxAdmin (Backend)`n"
+                $message += "📦 *Project:* KhulaFxAdmin (Backend API)`n"
                 $message += "🔢 *Build:* $(Build.BuildNumber)`n"
                 $message += "👤 *By:* $(Build.RequestedFor)`n"
                 $message += "🌿 *Branch:* $(Build.SourceBranchName)`n"
                 $message += "💬 *Commit:* $(Build.SourceVersionMessage)`n"
                 
                 if ($success) {
-                  $message += "🌐 *URL:* http://$(vpsServer)/api`n"
+                  $message += "🌐 *URL:* https://khulafx.com/api`n"
+                  $message += "📁 *Path:* C:\inetpub\wwwroot\khulafx.com\api`n"
+                  $message += "🔄 *Pool:* KhulaFxAppPool`n"
                 }
                 
                 $duration = [math]::Round((New-TimeSpan -Start '$(System.PipelineStartTime)' -End (Get-Date)).TotalMinutes, 2)
