@@ -206,13 +206,23 @@ stages:
                   } catch {}
                 }
                 
-                # Copy new files
+                # Copy new files (skip web.config)
                 Write-Host "Copying files..." -ForegroundColor Yellow
                 Get-ChildItem -Path $sourcePath -Force | ForEach-Object {
-                  if ($_.PSIsContainer) {
-                    Copy-Item -Path $_.FullName -Destination $destinationPath -Recurse -Force -ErrorAction SilentlyContinue
-                  } else {
-                    Copy-Item -Path $_.FullName -Destination $destinationPath -Force -ErrorAction SilentlyContinue
+                  # Skip web.config - it's locked by IIS
+                  if ($_.Name -eq "web.config") {
+                    Write-Host "⏭️ Skipping locked: web.config" -ForegroundColor Yellow
+                    return
+                  }
+                  
+                  try {
+                    if ($_.PSIsContainer) {
+                      Copy-Item -Path $_.FullName -Destination $destinationPath -Recurse -Force -ErrorAction SilentlyContinue
+                    } else {
+                      Copy-Item -Path $_.FullName -Destination $destinationPath -Force -ErrorAction SilentlyContinue
+                    }
+                  } catch {
+                    Write-Host "⚠️ Could not copy $($_.Name)" -ForegroundColor Yellow
                   }
                 }
                 
