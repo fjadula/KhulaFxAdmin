@@ -96,27 +96,52 @@ stages:
               projects: '$(Build.SourcesDirectory)/KhulaFxAdmin/KhulaFxAdmin.csproj'
               arguments: '--configuration Release --no-restore'
 
-          - task: DotNetCoreCLI@2
-            displayName: 'Publish KhulaFxAdmin'
-            inputs:
-              command: 'publish'
-              publishWebProjects: false
-              projects: '$(Build.SourcesDirectory)/KhulaFxAdmin/KhulaFxAdmin.csproj'
-              arguments: '--configuration Release --output $(Build.ArtifactStagingDirectory) --no-build'
-              zipAfterPublish: false
-
           - task: PowerShell@2
-            displayName: 'Verify and Create web.config'
+            displayName: 'Copy Build Output to Staging'
             inputs:
               targetType: 'inline'
               script: |
-                Write-Host "Verifying published files..." -ForegroundColor Cyan
+                Write-Host "Copying build output..." -ForegroundColor Cyan
+                
+                $sourceDir = "$(Build.SourcesDirectory)/KhulaFxAdmin/bin/Release/net8.0"
                 $stagingDir = "$(Build.ArtifactStagingDirectory)"
                 
-                $files = Get-ChildItem -Path $stagingDir -Recurse | Measure-Object
-                Write-Host "Files in staging: $($files.Count)" -ForegroundColor Green
+                if (-not (Test-Path $sourceDir)) {
+                  Write-Error "Build output not found: $sourceDir"
+                  exit 1
+                }
                 
-                # Create web.config
+                # Copy all files from bin/Release/net8.0
+                Get-ChildItem -Path $sourceDir -Force | ForEach-Object {
+                  try {
+                    if ($_.PSIsContainer) {
+                      Copy-Item -Path $_.FullName -Destination $stagingDir -Recurse -Force
+                      Write-Host "✅ Copied folder: $($_.Name)" -ForegroundColor Green
+                    } else {
+                      Copy-Item -Path $_.FullName -Destination $stagingDir -Force
+                      Write-Host "✅ Copied file: $($_.Name)" -ForegroundColor Green
+                    }
+                  } catch {
+                    Write-Host "⚠️ Error copying $($_.Name): $_" -ForegroundColor Yellow
+                  }
+                }
+                
+                # Verify DLL exists
+                $dllPath = Join-Path $stagingDir "KhulaFxAdmin.dll"
+                if (Test-Path $dllPath) {
+                  Write-Host "✅ DLL verified in staging" -ForegroundColor Green
+                } else {
+                  Write-Error "DLL not found in staging!"
+                  exit 1
+                }
+
+          - task: PowerShell@2
+            displayName: 'Create web.config'
+            inputs:
+              targetType: 'inline'
+              script: |
+                $stagingDir = "$(Build.ArtifactStagingDirectory)"
+                
                 $webConfig = @"
                 <?xml version="1.0" encoding="utf-8"?>
                 <configuration>
