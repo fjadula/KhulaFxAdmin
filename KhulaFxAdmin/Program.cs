@@ -17,8 +17,20 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 var allowedOrigins = builder.Environment.IsDevelopment()
-    ? new[] { "https://localhost:4200", "https://wwww.khulafx.com" }
-    : new[] { "https://wwww.khulafx.com" };
+    ? new[] {
+        "https://localhost:4200",
+        "https://localhost:3000",
+        "https://localhost:7222",
+        "https://www.khulafx.com",
+        "https://khulafx.com",
+        "http://108.181.161.170",
+        "http://localhost"
+      }
+    : new[] {
+        "https://www.khulafx.com",
+        "https://khulafx.com",
+        "http://108.181.161.170"
+      };
 
 builder.Services.AddCors(options =>
 {
