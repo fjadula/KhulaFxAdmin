@@ -9,9 +9,11 @@ using System.Text;
 using Microsoft.IdentityModel.Tokens;
 using Serilog;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Cors;
 
 namespace KhulaFxAdmin.Controllers
 {
+    [EnableCors("AllowFrontend")]
     [ApiController]
     [Route("api/[controller]")]
     public class AuthController : ControllerBase
