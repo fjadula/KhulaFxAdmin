@@ -1,5 +1,5 @@
 # Azure Pipeline for KhulaFxAdmin (Backend API)
-# Checks out BOTH KhulaFxAdmin and KhulaFxTradeMonitor repositories
+# Clones KhulaFxTradeMonitor from GitHub, builds it, then builds KhulaFxAdmin
 # Deploys to: https://khulafx.com/api
 
 trigger:
@@ -48,15 +48,8 @@ stages:
       - job: BuildAPI
         displayName: 'Build .NET 8 API'
         steps:
-          # Checkout KhulaFxAdmin (main repo)
           - checkout: self
             fetchDepth: 1
-            path: s/KhulaFxAdmin
-
-          # Checkout KhulaFxTradeMonitor (dependency repo in same project)
-          - checkout: git://KhulaFxTrade/KhulaFxTradeMonitor
-            fetchDepth: 1
-            path: s/KhulaFxTradeMonitor
 
           - task: UseDotNet@2
             displayName: 'Install .NET 8 SDK'
@@ -64,41 +57,68 @@ stages:
               version: '8.x'
 
           - task: PowerShell@2
-            displayName: 'Show Directory Structure'
+            displayName: 'Clone KhulaFxTradeMonitor from GitHub'
             inputs:
               targetType: 'inline'
               script: |
-                Write-Host "Directory structure:" -ForegroundColor Cyan
-                Get-ChildItem -Path "$(Build.SourcesDirectory)" -Recurse -Depth 1 | Where-Object { $_.PSIsContainer } | Select-Object FullName
+                Write-Host "Cloning KhulaFxTradeMonitor from GitHub..." -ForegroundColor Cyan
+                
+                $sourceDir = "$(Build.SourcesDirectory)"
+                $tradeMonitorDir = Join-Path $sourceDir "KhulaFxTradeMonitor"
+                
+                # Clone the repository
+                try {
+                  git clone https://github.com/YOUR_GITHUB_USERNAME/KhulaFxTradeMonitor.git $tradeMonitorDir
+                  Write-Host "✅ Repository cloned successfully" -ForegroundColor Green
+                }
+                catch {
+                  Write-Error "❌ Failed to clone repository: $_"
+                  exit 1
+                }
+                
+                # Verify the clone
+                if (Test-Path $tradeMonitorDir) {
+                  Write-Host "✅ KhulaFxTradeMonitor directory verified: $tradeMonitorDir" -ForegroundColor Green
+                  Get-ChildItem -Path $tradeMonitorDir -Recurse -Include "*.csproj" | ForEach-Object {
+                    Write-Host "  Found project: $($_.FullName)" -ForegroundColor Cyan
+                  }
+                }
+                else {
+                  Write-Error "❌ KhulaFxTradeMonitor directory not found"
+                  exit 1
+                }
 
           - task: DotNetCoreCLI@2
-            displayName: 'Build KhulaFxTradeMonitor First'
+            displayName: 'Build KhulaFxTradeMonitor'
             inputs:
               command: 'build'
-              projects: 's/KhulaFxTradeMonitor/**/*.csproj'
+              projects: '$(Build.SourcesDirectory)/KhulaFxTradeMonitor/**/*.csproj'
               arguments: '--configuration Release'
 
           - task: DotNetCoreCLI@2
-            displayName: 'Restore Packages for KhulaFxAdmin'
+            displayName: 'Restore KhulaFxAdmin Packages'
             inputs:
               command: 'restore'
-              projects: 's/KhulaFxAdmin/**/*.csproj'
+              projects: '**/*.csproj'
+              excludeDir: '$(Build.SourcesDirectory)/KhulaFxTradeMonitor'
 
           - task: DotNetCoreCLI@2
             displayName: 'Build KhulaFxAdmin Project'
             inputs:
               command: 'build'
-              projects: 's/KhulaFxAdmin/**/*.csproj'
+              projects: '**/*.csproj'
               arguments: '--configuration Release --no-restore'
+              excludeDir: '$(Build.SourcesDirectory)/KhulaFxTradeMonitor'
 
           - task: DotNetCoreCLI@2
             displayName: 'Publish for IIS'
             inputs:
               command: 'publish'
               publishWebProjects: true
-              projects: 's/KhulaFxAdmin/**/*.csproj'
+              projects: '**/*.csproj'
               arguments: '--configuration Release --output $(Build.ArtifactStagingDirectory) --no-build'
               zipAfterPublish: false
+              excludeDir: '$(Build.SourcesDirectory)/KhulaFxTradeMonitor'
 
           - task: PowerShell@2
             displayName: 'Create web.config for IIS'
