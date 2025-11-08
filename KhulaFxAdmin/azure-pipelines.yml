@@ -54,7 +54,7 @@ stages:
             path: s/KhulaFxAdmin
 
           # Checkout KhulaFxTradeMonitor (dependency repo)
-          - checkout: git://khulafx/KhulaFxTrade/KhulaFxTradeMonitor
+          - checkout: git://KhulaFx/KhulaFxTrade/KhulaFxTradeMonitor
             fetchDepth: 1
             path: s/KhulaFxTradeMonitor
 
