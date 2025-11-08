@@ -69,52 +69,55 @@ stages:
                 Write-Host "Destination: $dst" -ForegroundColor White
                 Write-Host ""
                 
-                Write-Host "Step 1: Authenticating with VPS..." -ForegroundColor Yellow
-                try {
-                  net use "\\$vps\c$" /user:"$username" "$password" /persistent:no 2>&1 | Out-Null
-                  Write-Host "✅ Network share authenticated" -ForegroundColor Green
-                } catch {
-                  Write-Host "❌ Authentication failed: $_" -ForegroundColor Red
-                  exit 1
-                }
+                Write-Host "Step 1: Clearing existing connections..." -ForegroundColor Yellow
+                net use * /delete /y 2>&1 | Out-Null
+                Start-Sleep -Seconds 2
+                Write-Host "✅ Connections cleared" -ForegroundColor Green
                 
                 Write-Host "`nStep 2: Stopping IIS..." -ForegroundColor Yellow
                 try {
-                  $session = New-PSSession -ComputerName $vps -Credential (New-Object System.Management.Automation.PSCredential($username, (ConvertTo-SecureString $password -AsPlainText -Force))) -ErrorAction Stop
-                  Invoke-Command -Session $session -ScriptBlock {
-                    net stop W3SVC
-                    Start-Sleep -Seconds 5
-                  }
+                  $secPassword = ConvertTo-SecureString $password -AsPlainText -Force
+                  $cred = New-Object System.Management.Automation.PSCredential("$vps\$username", $secPassword)
+                  $session = New-PSSession -ComputerName $vps -Credential $cred -ErrorAction Stop
+                  Invoke-Command -Session $session -ScriptBlock { net stop W3SVC; Start-Sleep -Seconds 5 }
                   Remove-PSSession $session
                   Write-Host "✅ IIS stopped" -ForegroundColor Green
                 } catch {
-                  Write-Host "⚠️ Could not stop IIS via PSRemoting, continuing..." -ForegroundColor Yellow
+                  Write-Host "⚠️ IIS stop failed, continuing..." -ForegroundColor Yellow
                 }
                 
-                Write-Host "`nStep 3: Waiting for file locks to release..." -ForegroundColor Yellow
+                Write-Host "`nStep 3: Waiting for file locks..." -ForegroundColor Yellow
                 Start-Sleep -Seconds 5
                 
-                Write-Host "`nStep 4: Deploying files with Robocopy..." -ForegroundColor Yellow
-                robocopy $src $dst /E /PURGE /R:10 /W:3 /NFL /NDL /NJH /NJS
+                Write-Host "`nStep 4: Authenticating and deploying..." -ForegroundColor Yellow
+                net use "\\$vps\c$" /user:"$vps\$username" "$password" /persistent:no
+                if ($LASTEXITCODE -eq 0) {
+                  Write-Host "✅ Authenticated" -ForegroundColor Green
+                } else {
+                  Write-Host "❌ Authentication failed" -ForegroundColor Red
+                  exit 1
+                }
+                
+                Write-Host "`nStep 5: Deploying files with Robocopy..." -ForegroundColor Yellow
+                robocopy $src $dst /E /PURGE /R:10 /W:3 /NFL /NDL
                 
                 $robocopyCode = $LASTEXITCODE
                 if ($robocopyCode -le 3) {
-                  Write-Host "✅ Files copied (code: $robocopyCode)" -ForegroundColor Green
+                  Write-Host "✅ Files deployed (code: $robocopyCode)" -ForegroundColor Green
                 } else {
-                  Write-Host "❌ Robocopy error code: $robocopyCode" -ForegroundColor Red
+                  Write-Host "⚠️ Robocopy code: $robocopyCode" -ForegroundColor Yellow
                 }
                 
-                Write-Host "`nStep 5: Starting IIS..." -ForegroundColor Yellow
+                Write-Host "`nStep 6: Starting IIS..." -ForegroundColor Yellow
                 try {
-                  $session = New-PSSession -ComputerName $vps -Credential (New-Object System.Management.Automation.PSCredential($username, (ConvertTo-SecureString $password -AsPlainText -Force))) -ErrorAction Stop
-                  Invoke-Command -Session $session -ScriptBlock {
-                    net start W3SVC
-                    Start-Sleep -Seconds 3
-                  }
+                  $secPassword = ConvertTo-SecureString $password -AsPlainText -Force
+                  $cred = New-Object System.Management.Automation.PSCredential("$vps\$username", $secPassword)
+                  $session = New-PSSession -ComputerName $vps -Credential $cred -ErrorAction Stop
+                  Invoke-Command -Session $session -ScriptBlock { net start W3SVC; Start-Sleep -Seconds 3 }
                   Remove-PSSession $session
                   Write-Host "✅ IIS started" -ForegroundColor Green
                 } catch {
-                  Write-Host "⚠️ Could not start IIS: $_" -ForegroundColor Yellow
+                  Write-Host "⚠️ IIS start failed: $_" -ForegroundColor Yellow
                 }
                 
                 Write-Host ""
