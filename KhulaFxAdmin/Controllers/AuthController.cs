@@ -15,6 +15,7 @@ namespace KhulaFxAdmin.Controllers
 {
     [EnableCors("AllowFrontend")]
     [ApiController]
+    [Route("api/Auth/[action]")]
     [Route("api/[controller]")]
     public class AuthController : ControllerBase
     {
@@ -36,7 +37,7 @@ namespace KhulaFxAdmin.Controllers
             _googleClientId = configuration["Google:ClientId"]
                 ?? throw new ArgumentNullException("Google Client ID not configured");
         }
-        [Route("api/Auth/[action]")]
+       
         [HttpPost("google")]
         [AllowAnonymous]
         public async Task<ActionResult<AuthResponse>> GoogleLogin([FromBody] GoogleLoginRequest request)
