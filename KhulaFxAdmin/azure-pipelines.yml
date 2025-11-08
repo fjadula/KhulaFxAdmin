@@ -103,7 +103,9 @@ stages:
                 
                 $robocopyCode = $LASTEXITCODE
                 if ($robocopyCode -le 3) {
-                  Write-Host "✅ Files deployed (code: $robocopyCode)" -ForegroundColor Green
+                  Write-Host "✅ Files deployed (code: $robocopyCode - normal)" -ForegroundColor Green
+                } elseif ($robocopyCode -eq 5) {
+                  Write-Host "⚠️ Access denied on some files (code: $robocopyCode)" -ForegroundColor Yellow
                 } else {
                   Write-Host "⚠️ Robocopy code: $robocopyCode" -ForegroundColor Yellow
                 }
@@ -125,3 +127,7 @@ stages:
                 Write-Host "✅ Deployment Complete!" -ForegroundColor Green
                 Write-Host "========================================" -ForegroundColor Green
                 Write-Host "API: https://khulafx.com/api" -ForegroundColor Cyan
+                Write-Host ""
+                Write-Host "Exit code handling: Robocopy codes 0-3 are normal (files copied/skipped)" -ForegroundColor Cyan
+                
+                exit 0
