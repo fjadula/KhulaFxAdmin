@@ -97,6 +97,35 @@ stages:
               arguments: '--configuration Release --no-restore'
 
           - task: PowerShell@2
+            displayName: 'Verify Build Output Exists'
+            inputs:
+              targetType: 'inline'
+              script: |
+                Write-Host "Checking build output..." -ForegroundColor Cyan
+                
+                $khulaFxAdminDir = "$(Build.SourcesDirectory)/KhulaFxAdmin"
+                $binDir = Join-Path $khulaFxAdminDir "bin"
+                $releaseDir = Join-Path $binDir "Release"
+                $net8Dir = Join-Path $releaseDir "net8.0"
+                
+                Write-Host "KhulaFxAdmin: $(Test-Path $khulaFxAdminDir)" -ForegroundColor White
+                Write-Host "bin: $(Test-Path $binDir)" -ForegroundColor White
+                Write-Host "Release: $(Test-Path $releaseDir)" -ForegroundColor White
+                Write-Host "net8.0: $(Test-Path $net8Dir)" -ForegroundColor White
+                
+                if (Test-Path $net8Dir) {
+                  Write-Host "`nContents of net8.0:" -ForegroundColor Cyan
+                  Get-ChildItem -Path $net8Dir -Force | ForEach-Object {
+                    Write-Host "  $($_.Name)" -ForegroundColor Green
+                  }
+                } else {
+                  Write-Error "net8.0 directory not found!"
+                  Write-Host "`nSearching for any dll files:" -ForegroundColor Yellow
+                  Get-ChildItem -Path $khulaFxAdminDir -Recurse -Include "*.dll" -ErrorAction SilentlyContinue | Select-Object FullName
+                  exit 1
+                }
+
+          - task: PowerShell@2
             displayName: 'Copy Build Output to Staging'
             inputs:
               targetType: 'inline'
