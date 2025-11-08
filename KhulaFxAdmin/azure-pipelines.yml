@@ -45,6 +45,7 @@ stages:
             artifact: backend
 
           - task: PowerShell@2
+            displayName: Deploy to IIS
             inputs:
               targetType: inline
               script: |
@@ -52,12 +53,28 @@ stages:
                 $vps = "$(vpsServer)"
                 $dst = "\\$vps\c$\inetpub\wwwroot\khulafx.com\api"
                 
+                Write-Host "Stopping IIS..." -ForegroundColor Yellow
+                Invoke-Command -ComputerName $vps -ScriptBlock {
+                  net stop W3SVC
+                  Start-Sleep -Seconds 2
+                }
+                
+                Write-Host "Clearing old files..." -ForegroundColor Yellow
                 Get-ChildItem -Path $dst -Force -ErrorAction Continue | Where-Object { $_.Name -ne "web.config" } | ForEach-Object {
                   Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                  Write-Host "  Deleted: $($_.Name)"
                 }
                 
+                Write-Host "Copying new files..." -ForegroundColor Yellow
                 Get-ChildItem -Path $src -Force | ForEach-Object {
                   Copy-Item -Path $_.FullName -Destination $dst -Recurse -Force -ErrorAction SilentlyContinue
+                  Write-Host "  Copied: $($_.Name)" -ForegroundColor Green
                 }
                 
-                Write-Host "Done" -ForegroundColor Green
+                Write-Host "Starting IIS..." -ForegroundColor Yellow
+                Invoke-Command -ComputerName $vps -ScriptBlock {
+                  net start W3SVC
+                  Start-Sleep -Seconds 3
+                }
+                
+                Write-Host "Deployment complete" -ForegroundColor Green
