@@ -29,29 +29,17 @@ stages:
             inputs:
               version: '8.x'
 
-          # Step 1: Clone KhulaFxTradeMonitor from GitHub
           - task: PowerShell@2
             displayName: 'Clone KhulaFxTradeMonitor from GitHub'
             inputs:
               targetType: 'inline'
               script: |
-                Write-Host "Cloning KhulaFxTradeMonitor from GitHub..." -ForegroundColor Cyan
-                
                 $sourceDir = "$(Build.SourcesDirectory)"
                 $tradeMonitorDir = Join-Path $sourceDir "KhulaFxTradeMonitor"
-                $githubPat = "$(GITHUB_PAT)"
-                
-                try {
-                  $gitUrl = "https://fjadula:$githubPat@github.com/fjadula/KhulaFxTradeMonitor.git"
-                  git clone $gitUrl $tradeMonitorDir
-                  Write-Host "✅ Repository cloned" -ForegroundColor Green
-                }
-                catch {
-                  Write-Error "Failed to clone: $_"
-                  exit 1
-                }
+                $gitUrl = "https://fjadula:$(GITHUB_PAT)@github.com/fjadula/KhulaFxTradeMonitor.git"
+                git clone $gitUrl $tradeMonitorDir
+                Write-Host "✅ Cloned KhulaFxTradeMonitor" -ForegroundColor Green
 
-          # Step 2: Build KhulaFxTradeMonitor
           - task: DotNetCoreCLI@2
             displayName: 'Build KhulaFxTradeMonitor'
             inputs:
@@ -59,30 +47,12 @@ stages:
               projects: '$(Build.SourcesDirectory)/KhulaFxTradeMonitor/**/*.csproj'
               arguments: '--configuration Release'
 
-          # Step 3: Verify KhulaFxTradeMonitor DLL exists
-          - task: PowerShell@2
-            displayName: 'Verify KhulaFxTradeMonitor DLL'
-            inputs:
-              targetType: 'inline'
-              script: |
-                $dllPath = "$(Build.SourcesDirectory)\KhulaFxTradeMonitor\KhulaFxTradeMonitor\bin\Release\net8.0\KhulaFxTradeMonitor.dll"
-                
-                if (Test-Path $dllPath) {
-                  $size = (Get-Item $dllPath).Length
-                  Write-Host "✅ DLL found: $size bytes" -ForegroundColor Green
-                } else {
-                  Write-Error "DLL not found: $dllPath"
-                  exit 1
-                }
-
-          # Step 4: Restore KhulaFxAdmin
           - task: DotNetCoreCLI@2
             displayName: 'Restore KhulaFxAdmin'
             inputs:
               command: 'restore'
               projects: '$(Build.SourcesDirectory)/KhulaFxAdmin/KhulaFxAdmin.csproj'
 
-          # Step 5: Build KhulaFxAdmin
           - task: DotNetCoreCLI@2
             displayName: 'Build KhulaFxAdmin'
             inputs:
@@ -90,22 +60,6 @@ stages:
               projects: '$(Build.SourcesDirectory)/KhulaFxAdmin/KhulaFxAdmin.csproj'
               arguments: '--configuration Release --no-restore'
 
-          # Step 6: Verify build output
-          - task: PowerShell@2
-            displayName: 'Verify Build Output'
-            inputs:
-              targetType: 'inline'
-              script: |
-                $dllPath = "$(Build.SourcesDirectory)\KhulaFxAdmin\bin\Release\net8.0\KhulaFxAdmin.dll"
-                
-                if (Test-Path $dllPath) {
-                  Write-Host "✅ KhulaFxAdmin.dll built successfully" -ForegroundColor Green
-                } else {
-                  Write-Error "Build failed: DLL not found"
-                  exit 1
-                }
-
-          # Step 7: Prepare artifacts
           - task: PowerShell@2
             displayName: 'Prepare Artifacts'
             inputs:
@@ -113,41 +67,11 @@ stages:
               script: |
                 $sourceDir = "$(Build.SourcesDirectory)\KhulaFxAdmin\bin\Release\net8.0"
                 $stagingDir = "$(Build.ArtifactStagingDirectory)"
-                
-                Write-Host "Copying files to staging..." -ForegroundColor Cyan
-                Get-ChildItem -Path $sourceDir -Force | ForEach-Object {
-                  Copy-Item -Path $_.FullName -Destination $stagingDir -Recurse -Force
-                  Write-Host "  $_" -ForegroundColor Green
-                }
-                
-                # Create web.config
-                $webConfig = @"
-                <?xml version="1.0" encoding="utf-8"?>
-                <configuration>
-                  <location path="." inheritInChildApplications="false">
-                    <system.webServer>
-                      <handlers>
-                        <add name="aspNetCore" path="*" verb="*" modules="AspNetCoreModuleV2" resourceType="Unspecified" />
-                      </handlers>
-                      <aspNetCore processPath="dotnet" 
-                                  arguments=".\KhulaFxAdmin.dll" 
-                                  stdoutLogEnabled="true" 
-                                  stdoutLogFile=".\logs\stdout" 
-                                  hostingModel="inprocess">
-                        <environmentVariables>
-                          <environmentVariable name="ASPNETCORE_ENVIRONMENT" value="Production" />
-                          <environmentVariable name="ASPNETCORE_URLS" value="http://+:80" />
-                        </environmentVariables>
-                      </aspNetCore>
-                    </system.webServer>
-                  </location>
-                </configuration>
-                "@
+                Get-ChildItem -Path $sourceDir | ForEach-Object { Copy-Item -Path $_.FullName -Destination $stagingDir -Recurse -Force }
                 
                 $webConfig | Out-File -FilePath "$stagingDir\web.config" -Encoding utf8 -Force
-                Write-Host "✅ web.config created" -ForegroundColor Green
+                Write-Host "✅ Artifacts prepared" -ForegroundColor Green
 
-          # Step 8: Publish artifacts
           - task: PublishBuildArtifacts@1
             displayName: 'Publish Artifacts'
             inputs:
@@ -166,45 +90,7 @@ stages:
             artifact: backend-api
 
           - task: PowerShell@2
-            displayName: 'Stop IIS App Pool'
-            inputs:
-              targetType: 'inline'
-              script: |
-                Write-Host "Stopping IIS app pool on VPS..." -ForegroundColor Yellow
-                
-                $vpsIP = "108.181.161.170"
-                $deployUser = "$(deployUser)"
-                $deployPass = "$(DEPLOY_PASSWORD)"
-                $appPoolName = "KhulaFxAppPool"
-                
-                $credential = New-Object PSCredential("$vpsIP\$deployUser", (ConvertTo-SecureString $deployPass -AsPlainText -Force))
-                
-                try {
-                  $session = New-PSSession -ComputerName $vpsIP -Credential $credential -ErrorAction Stop
-                  
-                  Invoke-Command -Session $session -ScriptBlock {
-                    param($poolName)
-                    Import-Module WebAdministration -ErrorAction SilentlyContinue
-                    
-                    $pool = Get-WebAppPool -Name $poolName -ErrorAction SilentlyContinue
-                    if ($pool -and $pool.State -eq "Started") {
-                      Stop-WebAppPool -Name $poolName
-                      Write-Host "✅ App pool stopped" -ForegroundColor Green
-                      Start-Sleep -Seconds 3
-                    } else {
-                      Write-Host "⚠️ App pool not running or not found" -ForegroundColor Yellow
-                    }
-                  } -ArgumentList $appPoolName
-                  
-                  Remove-PSSession -Session $session
-                  Start-Sleep -Seconds 2
-                } catch {
-                  Write-Host "⚠️ Could not stop app pool: $_" -ForegroundColor Yellow
-                  Write-Host "Continuing anyway..." -ForegroundColor Yellow
-                }
-
-          - task: PowerShell@2
-            displayName: 'Deploy to VPS'
+            displayName: 'Deploy via Remote Session'
             inputs:
               targetType: 'inline'
               script: |
@@ -212,85 +98,50 @@ stages:
                 
                 $sourcePath = "$(Pipeline.Workspace)\backend-api"
                 $vpsIP = "108.181.161.170"
-                $netPath = "\\$vpsIP\c$\inetpub\wwwroot\khulafx.com\api"
-                
-                Write-Host "Source: $sourcePath" -ForegroundColor White
-                Write-Host "Destination: $netPath" -ForegroundColor White
-                
-                # Verify source
-                $sourceFiles = @(Get-ChildItem -Path $sourcePath -Force)
-                Write-Host "Files to deploy: $($sourceFiles.Count)" -ForegroundColor Cyan
-                
-                # Copy files
-                Write-Host "`nCopying files..." -ForegroundColor Yellow
-                $copiedCount = 0
-                
-                foreach ($file in $sourceFiles) {
-                  if ($file.Name -eq "web.config") { 
-                    Write-Host "⏭️ Skipping: web.config (locked by IIS)" -ForegroundColor Yellow
-                    continue 
-                  }
-                  
-                  try {
-                    if ($file.PSIsContainer) {
-                      Copy-Item -Path $file.FullName -Destination $netPath -Recurse -Force -ErrorAction Stop
-                    } else {
-                      Copy-Item -Path $file.FullName -Destination $netPath -Force -ErrorAction Stop
-                    }
-                    Write-Host "✅ $($file.Name)" -ForegroundColor Green
-                    $copiedCount++
-                  } catch {
-                    Write-Host "⚠️ $($file.Name): $_" -ForegroundColor Yellow
-                  }
-                }
-                
-                # Verify
-                Write-Host "`nVerifying deployment..." -ForegroundColor Cyan
-                Start-Sleep -Seconds 2
-                
-                $destFiles = @(Get-ChildItem -Path $netPath -Force -ErrorAction SilentlyContinue)
-                $dllFile = $destFiles | Where-Object { $_.Name -like "*KhulaFxAdmin*.dll" }
-                
-                if ($dllFile) {
-                  Write-Host "✅ SUCCESS: $($dllFile.Name) deployed" -ForegroundColor Green
-                  Write-Host "Total files: $($destFiles.Count)" -ForegroundColor Green
-                  Write-Host "`n✅ Deployment complete!" -ForegroundColor Green
-                } else {
-                  Write-Host "Files at destination: $($destFiles.Count)" -ForegroundColor Yellow
-                  $destFiles | Select-Object -First 10 | ForEach-Object { Write-Host "  $_" }
-                  Write-Error "Deployment failed: DLL not found"
-                  exit 1
-                }
-
-          - task: PowerShell@2
-            displayName: 'Start IIS App Pool'
-            inputs:
-              targetType: 'inline'
-              script: |
-                Write-Host "Starting IIS app pool..." -ForegroundColor Yellow
-                
-                $vpsIP = "108.181.161.170"
                 $deployUser = "$(deployUser)"
                 $deployPass = "$(DEPLOY_PASSWORD)"
-                $appPoolName = "KhulaFxAppPool"
+                $destPath = "C:\inetpub\wwwroot\khulafx.com\api"
                 
+                Write-Host "Creating remote session..." -ForegroundColor Yellow
                 $credential = New-Object PSCredential("$vpsIP\$deployUser", (ConvertTo-SecureString $deployPass -AsPlainText -Force))
                 
                 try {
                   $session = New-PSSession -ComputerName $vpsIP -Credential $credential -ErrorAction Stop
+                  Write-Host "✅ Connected" -ForegroundColor Green
+                  
+                  # Stop IIS
+                  Invoke-Command -Session $session -ScriptBlock { Stop-Service W3SVC -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2 }
+                  
+                  # Clear old files
                   Invoke-Command -Session $session -ScriptBlock {
-                    param($poolName)
-                    Import-Module WebAdministration -ErrorAction SilentlyContinue
-                    $pool = Get-WebAppPool -Name $poolName -ErrorAction SilentlyContinue
-                    if ($pool) {
-                      Start-WebAppPool -Name $poolName
-                      Write-Host "✅ App pool started" -ForegroundColor Green
-                      Start-Sleep -Seconds 3
-                    }
-                  } -ArgumentList $appPoolName
+                    param($path)
+                    Get-ChildItem $path -Force -ErrorAction Continue | Where-Object { $_.Name -notmatch '^(web\.config|logs)$' } | ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+                  } -ArgumentList $destPath
+                  
+                  # Copy files
+                  Write-Host "Copying files..." -ForegroundColor Cyan
+                  Get-ChildItem -Path $sourcePath -Force | Where-Object { $_.Name -ne "web.config" } | ForEach-Object {
+                    Copy-Item -Path $_.FullName -Destination $destPath -ToSession $session -Recurse -Force -ErrorAction SilentlyContinue
+                    Write-Host "✅ $_" -ForegroundColor Green
+                  }
+                  
+                  # Start IIS
+                  Invoke-Command -Session $session -ScriptBlock { Start-Service W3SVC -ErrorAction SilentlyContinue; Start-Sleep -Seconds 3 }
+                  
+                  # Verify
+                  $dllExists = Invoke-Command -Session $session -ScriptBlock { param($p); Test-Path "$p\KhulaFxAdmin.dll" } -ArgumentList $destPath
+                  
+                  if ($dllExists) {
+                    Write-Host "`n✅ DEPLOYMENT SUCCESSFUL" -ForegroundColor Green
+                  } else {
+                    Write-Error "DLL not found at destination"
+                    exit 1
+                  }
+                  
                   Remove-PSSession -Session $session
                 } catch {
-                  Write-Host "⚠️ Could not start: $_" -ForegroundColor Yellow
+                  Write-Error "Deployment failed: $_"
+                  exit 1
                 }
 
           - task: PowerShell@2
@@ -299,15 +150,14 @@ stages:
               targetType: 'inline'
               script: |
                 Write-Host "Testing API..." -ForegroundColor Cyan
-                Start-Sleep -Seconds 3
-                
+                Start-Sleep -Seconds 5
                 try {
-                  $response = Invoke-WebRequest -Uri "http://108.181.161.170/api" -UseBasicParsing -TimeoutSec 10
-                  Write-Host "✅ API responding: $($response.StatusCode)" -ForegroundColor Green
+                  $r = Invoke-WebRequest -Uri "http://108.181.161.170/api" -UseBasicParsing -TimeoutSec 10
+                  Write-Host "✅ API responding: $($r.StatusCode)" -ForegroundColor Green
                 } catch {
                   if ($_.Exception.Response.StatusCode -eq 404) {
                     Write-Host "✅ API running (404 expected)" -ForegroundColor Green
                   } else {
-                    Write-Host "⚠️ API response: $($_.Exception.Message)" -ForegroundColor Yellow
+                    Write-Host "⚠️ API check: $($_.Exception.Message)" -ForegroundColor Yellow
                   }
                 }
