@@ -8,7 +8,7 @@ resources:
       type: github
       name: fjadula/KhulaFxAdmin
       endpoint: github
-    - repository: KhulaFxTradeMonitor
+    - repository: TradeMonitor
       type: github
       name: fjadula/KhulaFxTradeMonitor
       endpoint: github
@@ -25,8 +25,9 @@ stages:
       - job: BuildBackend
         steps:
           - checkout: self
-          - checkout: KhulaFxTradeMonitor
-            path: KhulaFxTradeMonitor
+
+          - checkout: TradeMonitor
+            path: s/KhulaFxTradeMonitor
 
           - task: UseDotNet@2
             displayName: Install .NET 8
@@ -87,23 +88,9 @@ stages:
                 $dst = "\\$vps\c$\inetpub\wwwroot\khulafx.com\api"
                 
                 Write-Host "Deploying..." -ForegroundColor Cyan
-                Write-Host "Source: $src"
-                Write-Host "Destination: $dst"
                 
-                if (-not (Test-Path $src)) {
-                  Write-Error "Source not found"
-                  exit 1
-                }
-                
-                if (-not (Test-Path $dst)) {
-                  Write-Error "Destination not accessible"
-                  exit 1
-                }
-                
-                Get-ChildItem -Path $dst -Force -ErrorAction Continue | ForEach-Object {
-                  if ($_.Name -ne "web.config") {
-                    Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
-                  }
+                Get-ChildItem -Path $dst -Force -ErrorAction Continue | Where-Object { $_.Name -ne "web.config" } | ForEach-Object {
+                  Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
                 }
                 
                 Get-ChildItem -Path $src -Force | ForEach-Object {
@@ -112,8 +99,7 @@ stages:
                   } else {
                     Copy-Item -Path $_.FullName -Destination $dst -Force
                   }
-                  Write-Host "Copied: $($_.Name)" -ForegroundColor Green
+                  Write-Host "OK: $($_.Name)" -ForegroundColor Green
                 }
                 
-                Write-Host "✅ Deployment Complete" -ForegroundColor Green
-                Write-Host "✅ Deployment Complete" -ForegroundColor Green
+                Write-Host "Complete" -ForegroundColor Green
