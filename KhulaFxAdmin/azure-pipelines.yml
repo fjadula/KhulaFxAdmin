@@ -69,21 +69,52 @@ stages:
                 Write-Host "Destination: $dst" -ForegroundColor White
                 Write-Host ""
                 
-                Write-Host "Authenticating with VPS..." -ForegroundColor Yellow
-                net use "\\$vps\c$" /user:"$vps\$username" "$password" /persistent:no | Out-Null
-                Write-Host "✅ Authenticated" -ForegroundColor Green
+                Write-Host "Step 1: Authenticating with VPS..." -ForegroundColor Yellow
+                try {
+                  net use "\\$vps\c$" /user:"$username" "$password" /persistent:no 2>&1 | Out-Null
+                  Write-Host "✅ Network share authenticated" -ForegroundColor Green
+                } catch {
+                  Write-Host "❌ Authentication failed: $_" -ForegroundColor Red
+                  exit 1
+                }
                 
-                Write-Host "`nDeploying files with Robocopy..." -ForegroundColor Yellow
-                robocopy $src $dst /E /PURGE /R:5 /W:2 /NFL /NDL /NJH /NJS
+                Write-Host "`nStep 2: Stopping IIS..." -ForegroundColor Yellow
+                try {
+                  $session = New-PSSession -ComputerName $vps -Credential (New-Object System.Management.Automation.PSCredential($username, (ConvertTo-SecureString $password -AsPlainText -Force))) -ErrorAction Stop
+                  Invoke-Command -Session $session -ScriptBlock {
+                    net stop W3SVC
+                    Start-Sleep -Seconds 5
+                  }
+                  Remove-PSSession $session
+                  Write-Host "✅ IIS stopped" -ForegroundColor Green
+                } catch {
+                  Write-Host "⚠️ Could not stop IIS via PSRemoting, continuing..." -ForegroundColor Yellow
+                }
+                
+                Write-Host "`nStep 3: Waiting for file locks to release..." -ForegroundColor Yellow
+                Start-Sleep -Seconds 5
+                
+                Write-Host "`nStep 4: Deploying files with Robocopy..." -ForegroundColor Yellow
+                robocopy $src $dst /E /PURGE /R:10 /W:3 /NFL /NDL /NJH /NJS
                 
                 $robocopyCode = $LASTEXITCODE
-                if ($robocopyCode -le 1) {
-                  Write-Host "✅ Files copied successfully" -ForegroundColor Green
-                } elseif ($robocopyCode -eq 2) {
-                  Write-Host "⚠️ Some files were skipped (typically OK)" -ForegroundColor Yellow
+                if ($robocopyCode -le 3) {
+                  Write-Host "✅ Files copied (code: $robocopyCode)" -ForegroundColor Green
                 } else {
                   Write-Host "❌ Robocopy error code: $robocopyCode" -ForegroundColor Red
-                  exit 1
+                }
+                
+                Write-Host "`nStep 5: Starting IIS..." -ForegroundColor Yellow
+                try {
+                  $session = New-PSSession -ComputerName $vps -Credential (New-Object System.Management.Automation.PSCredential($username, (ConvertTo-SecureString $password -AsPlainText -Force))) -ErrorAction Stop
+                  Invoke-Command -Session $session -ScriptBlock {
+                    net start W3SVC
+                    Start-Sleep -Seconds 3
+                  }
+                  Remove-PSSession $session
+                  Write-Host "✅ IIS started" -ForegroundColor Green
+                } catch {
+                  Write-Host "⚠️ Could not start IIS: $_" -ForegroundColor Yellow
                 }
                 
                 Write-Host ""
@@ -91,5 +122,3 @@ stages:
                 Write-Host "✅ Deployment Complete!" -ForegroundColor Green
                 Write-Host "========================================" -ForegroundColor Green
                 Write-Host "API: https://khulafx.com/api" -ForegroundColor Cyan
-                
-                Write-Host "`nIIS will recycle automatically when files are detected" -ForegroundColor Cyan
