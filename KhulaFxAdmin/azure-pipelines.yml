@@ -235,14 +235,32 @@ stages:
                 
                 # Verify
                 Start-Sleep -Seconds 2
-                $dllExists = Test-Path "$destPath\KhulaFxAdmin.dll"
+                
+                Write-Host "`nChecking destination files..." -ForegroundColor Cyan
+                $destFiles = Get-ChildItem -Path $destPath -Force -ErrorAction SilentlyContinue | Select-Object Name
+                Write-Host "Files at destination:" -ForegroundColor White
+                $destFiles | ForEach-Object { Write-Host "  $_" }
+                
+                # Check for DLL (case-insensitive)
+                $dllFile = Get-ChildItem -Path $destPath -Filter "*.dll" -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "KhulaFxAdmin" }
+                $dllExists = $null -ne $dllFile
+                
                 Write-Host "`nVerification:" -ForegroundColor Yellow
                 Write-Host "  Files copied: $copiedCount" -ForegroundColor Cyan
                 Write-Host "  Files failed: $failedCount" -ForegroundColor $(if($failedCount -eq 0){'Green'}else{'Yellow'})
-                Write-Host "  DLL: $(if($dllExists){'✅ FOUND'}else{'❌ MISSING'})" -ForegroundColor $(if($dllExists){'Green'}else{'Red'})
+                
+                if ($dllFile) {
+                  Write-Host "  DLL found: ✅ $($dllFile.Name)" -ForegroundColor Green
+                } else {
+                  Write-Host "  DLL: ❌ NOT FOUND" -ForegroundColor Red
+                  Write-Host "`n  Searching for any DLL files..." -ForegroundColor Yellow
+                  Get-ChildItem -Path $destPath -Filter "*.dll" -Force | Select-Object -First 5
+                }
                 
                 if (-not $dllExists) {
-                  Write-Error "Deployment failed: DLL not found at destination"
+                  Write-Error "Deployment failed: KhulaFxAdmin DLL not found at destination"
+                  Write-Host "`nDestination path: $destPath" -ForegroundColor Yellow
+                  Write-Host "Directory exists: $(Test-Path $destPath)" -ForegroundColor Yellow
                   exit 1
                 }
                 
