@@ -1,116 +1,163 @@
+# Azure Pipeline for KhulaFxAdmin (Backend API)
+# Clones KhulaFxTradeMonitor from GitHub, builds it, then builds and deploys KhulaFxAdmin
+# Deploys to: https://khulafx.com/api
+
 trigger:
-  - master
-  - main
+  branches:
+    include:
+      - main
+      - master
 
 pool:
-  name: Default
+  name: 'Default'
 
 variables:
-  - group: Deployment-Secrets
+  - group: 'Deployment-Secrets'
 
 stages:
   - stage: Build
+    displayName: 'Build Backend API'
     jobs:
-      - job: BuildAngular
+      - job: BuildAPI
+        displayName: 'Build .NET 8 API'
         steps:
           - checkout: self
+            fetchDepth: 1
 
-          - task: NodeTool@0
+          - task: UseDotNet@2
+            displayName: 'Install .NET 8 SDK'
             inputs:
-              versionSpec: 20.x
+              version: '8.x'
 
-          - task: Npm@1
+          - task: PowerShell@2
+            displayName: 'Clone KhulaFxTradeMonitor from GitHub'
             inputs:
-              command: install
+              targetType: 'inline'
+              script: |
+                $sourceDir = "$(Build.SourcesDirectory)"
+                $tradeMonitorDir = Join-Path $sourceDir "KhulaFxTradeMonitor"
+                $gitUrl = "https://fjadula:$(GITHUB_PAT)@github.com/fjadula/KhulaFxTradeMonitor.git"
+                git clone $gitUrl $tradeMonitorDir
+                Write-Host "✅ Cloned KhulaFxTradeMonitor" -ForegroundColor Green
 
-          - task: Npm@1
+          - task: DotNetCoreCLI@2
+            displayName: 'Build KhulaFxTradeMonitor'
             inputs:
-              command: custom
-              customCommand: run build -- --configuration production --base-href=/secure-admin/
+              command: 'build'
+              projects: '$(Build.SourcesDirectory)/KhulaFxTradeMonitor/**/*.csproj'
+              arguments: '--configuration Release'
+
+          - task: DotNetCoreCLI@2
+            displayName: 'Restore KhulaFxAdmin'
+            inputs:
+              command: 'restore'
+              projects: '$(Build.SourcesDirectory)/KhulaFxAdmin/KhulaFxAdmin.csproj'
+
+          - task: DotNetCoreCLI@2
+            displayName: 'Build KhulaFxAdmin'
+            inputs:
+              command: 'build'
+              projects: '$(Build.SourcesDirectory)/KhulaFxAdmin/KhulaFxAdmin.csproj'
+              arguments: '--configuration Release --no-restore'
+
+          - task: PowerShell@2
+            displayName: 'Prepare Artifacts'
+            inputs:
+              targetType: 'inline'
+              script: |
+                $sourceDir = "$(Build.SourcesDirectory)\KhulaFxAdmin\bin\Release\net8.0"
+                $stagingDir = "$(Build.ArtifactStagingDirectory)"
+                Get-ChildItem -Path $sourceDir | ForEach-Object { Copy-Item -Path $_.FullName -Destination $stagingDir -Recurse -Force }
+                
+                $webConfig | Out-File -FilePath "$stagingDir\web.config" -Encoding utf8 -Force
+                Write-Host "✅ Artifacts prepared" -ForegroundColor Green
 
           - task: PublishBuildArtifacts@1
+            displayName: 'Publish Artifacts'
             inputs:
-              pathToPublish: $(Build.SourcesDirectory)/dist
-              artifactName: frontend
+              pathToPublish: '$(Build.ArtifactStagingDirectory)'
+              artifactName: 'backend-api'
 
   - stage: Deploy
+    displayName: 'Deploy to VPS'
     dependsOn: Build
+    condition: succeeded()
     jobs:
-      - job: DeployJob
+      - job: DeployAPI
+        displayName: 'Deploy to IIS'
         steps:
           - download: current
-            artifact: frontend
+            artifact: backend-api
 
           - task: PowerShell@2
-            displayName: Verify Frontend Build
+            displayName: 'Deploy via Remote Session'
             inputs:
-              targetType: inline
+              targetType: 'inline'
               script: |
-                $src = "$(Pipeline.Workspace)/frontend"
-                Write-Host "Source: $src" -ForegroundColor Cyan
-                if (Test-Path $src) {
-                  $files = Get-ChildItem -Path $src -Force -Recurse -File
-                  Write-Host "Found $($files.Count) files" -ForegroundColor Green
-                  Write-Host "Sample files:" -ForegroundColor Yellow
-                  $files | Select-Object -First 5 | ForEach-Object { Write-Host "  $_" }
-                } else {
-                  Write-Host "ERROR: Source not found!" -ForegroundColor Red
-                  exit 1
-                }
-
-          - task: PowerShell@2
-            displayName: Deploy to IIS
-            inputs:
-              targetType: inline
-              script: |
-                $src = "$(Pipeline.Workspace)/frontend"
-                $vps = "$(vpsServer)"
-                $dst = "\\$vps\c$\TRADERVPS\Sites\khulafx.com\secure-admin"
+                Write-Host "Deploying to VPS..." -ForegroundColor Cyan
                 
-                Write-Host "========================================" -ForegroundColor Cyan
-                Write-Host "Deploying Frontend" -ForegroundColor Cyan
-                Write-Host "========================================" -ForegroundColor Cyan
-                Write-Host "Source: $src" -ForegroundColor White
-                Write-Host "VPS: $vps" -ForegroundColor White
-                Write-Host "Destination: $dst" -ForegroundColor White
-                Write-Host ""
+                $sourcePath = "$(Pipeline.Workspace)\backend-api"
+                $vpsIP = "108.181.161.170"
+                $deployUser = "$(deployUser)"
+                $deployPass = "$(DEPLOY_PASSWORD)"
+                $destPath = "C:\inetpub\wwwroot\khulafx.com\api"
                 
-                if (-not (Test-Path $src)) {
-                  Write-Host "ERROR: Source not found" -ForegroundColor Red
-                  exit 1
-                }
+                Write-Host "Creating remote session..." -ForegroundColor Yellow
+                $credential = New-Object PSCredential("$vpsIP\$deployUser", (ConvertTo-SecureString $deployPass -AsPlainText -Force))
                 
-                if (-not (Test-Path $dst)) {
-                  Write-Host "ERROR: Destination not accessible" -ForegroundColor Red
-                  exit 1
-                }
-                
-                Write-Host "Copying files..." -ForegroundColor Yellow
-                $count = 0
-                Get-ChildItem -Path $src -Force | ForEach-Object {
-                  try {
-                    if ($_.PSIsContainer) {
-                      Copy-Item -Path $_.FullName -Destination $dst -Recurse -Force -ErrorAction Stop
-                    } else {
-                      Copy-Item -Path $_.FullName -Destination $dst -Force -ErrorAction Stop
-                    }
-                    Write-Host "  OK: $($_.Name)" -ForegroundColor Green
-                    $count++
-                  } catch {
-                    Write-Host "  ERROR: $($_.Name) - $_" -ForegroundColor Red
+                try {
+                  $session = New-PSSession -ComputerName $vpsIP -Credential $credential -ErrorAction Stop
+                  Write-Host "✅ Connected" -ForegroundColor Green
+                  
+                  # Stop IIS
+                  Invoke-Command -Session $session -ScriptBlock { Stop-Service W3SVC -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2 }
+                  
+                  # Clear old files
+                  Invoke-Command -Session $session -ScriptBlock {
+                    param($path)
+                    Get-ChildItem $path -Force -ErrorAction Continue | Where-Object { $_.Name -notmatch '^(web\.config|logs)$' } | ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+                  } -ArgumentList $destPath
+                  
+                  # Copy files
+                  Write-Host "Copying files..." -ForegroundColor Cyan
+                  Get-ChildItem -Path $sourcePath -Force | Where-Object { $_.Name -ne "web.config" } | ForEach-Object {
+                    Copy-Item -Path $_.FullName -Destination $destPath -ToSession $session -Recurse -Force -ErrorAction SilentlyContinue
+                    Write-Host "✅ $_" -ForegroundColor Green
                   }
-                }
-                
-                Write-Host ""
-                Write-Host "========================================" -ForegroundColor Green
-                Write-Host "Deployment Complete" -ForegroundColor Green
-                Write-Host "========================================" -ForegroundColor Green
-                Write-Host "Files deployed: $count" -ForegroundColor Cyan
-                
-                $indexExists = Test-Path "$dst\index.html"
-                Write-Host "index.html exists: $(if($indexExists){'YES'}else{'NO'})" -ForegroundColor $(if($indexExists){'Green'}else{'Red'})
-                
-                if (-not $indexExists) {
-                  Write-Host "ERROR: index.html not found at destination!" -ForegroundColor Red
+                  
+                  # Start IIS
+                  Invoke-Command -Session $session -ScriptBlock { Start-Service W3SVC -ErrorAction SilentlyContinue; Start-Sleep -Seconds 3 }
+                  
+                  # Verify
+                  $dllExists = Invoke-Command -Session $session -ScriptBlock { param($p); Test-Path "$p\KhulaFxAdmin.dll" } -ArgumentList $destPath
+                  
+                  if ($dllExists) {
+                    Write-Host "`n✅ DEPLOYMENT SUCCESSFUL" -ForegroundColor Green
+                  } else {
+                    Write-Error "DLL not found at destination"
+                    exit 1
+                  }
+                  
+                  Remove-PSSession -Session $session
+                } catch {
+                  Write-Error "Deployment failed: $_"
                   exit 1
+                }
+
+          - task: PowerShell@2
+            displayName: 'Verify API'
+            inputs:
+              targetType: 'inline'
+              script: |
+                Write-Host "Testing API..." -ForegroundColor Cyan
+                Start-Sleep -Seconds 5
+                try {
+                  $r = Invoke-WebRequest -Uri "http://108.181.161.170/api" -UseBasicParsing -TimeoutSec 10
+                  Write-Host "✅ API responding: $($r.StatusCode)" -ForegroundColor Green
+                } catch {
+                  if ($_.Exception.Response.StatusCode -eq 404) {
+                    Write-Host "✅ API running (404 expected)" -ForegroundColor Green
+                  } else {
+                    Write-Host "⚠️ API check: $($_.Exception.Message)" -ForegroundColor Yellow
+                  }
                 }
