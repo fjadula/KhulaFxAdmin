@@ -38,9 +38,9 @@ namespace KhulaFxAdmin.Services
 
             if (await reader.ReadAsync())
             {
-                var totalTrades = reader.GetInt32(0);
-                var itmCount = reader.GetInt32(1);
-                var otmCount = reader.GetInt32(2);
+                var totalTrades = reader.IsDBNull(0) ? 0 : reader.GetInt32(0);
+                var itmCount = reader.IsDBNull(1) ? 0 : reader.GetInt32(1);
+                var otmCount = reader.IsDBNull(2) ? 0 : reader.GetInt32(2);
                 var winRate = totalTrades > 0 ? Math.Round((decimal)itmCount / totalTrades * 100, 2) : 0;
 
                 return new DailyReport
@@ -94,9 +94,9 @@ namespace KhulaFxAdmin.Services
 
             if (await reader.ReadAsync())
             {
-                var totalTrades = reader.GetInt32(0);
-                var itmCount = reader.GetInt32(1);
-                var otmCount = reader.GetInt32(2);
+                var totalTrades = reader.IsDBNull(0) ? 0 : reader.GetInt32(0);
+                var itmCount = reader.IsDBNull(1) ? 0 : reader.GetInt32(1);
+                var otmCount = reader.IsDBNull(2) ? 0 : reader.GetInt32(2);
                 var winRate = totalTrades > 0 ? Math.Round((decimal)itmCount / totalTrades * 100, 2) : 0;
 
                 return $"Weekly Report ({monday:yyyy-MM-dd} to {friday:yyyy-MM-dd})\n" +

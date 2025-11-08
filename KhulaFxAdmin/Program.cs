@@ -18,33 +18,25 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 // Define allowed origins based on environment
-var allowedOrigins = builder.Environment.IsDevelopment()
-    ? new[] {
-        "http://localhost:4200",
-        "http://localhost:3000",
-        "http://localhost:7222",
-        "https://khulafx.com",
-        "https://www.khulafx.com",
-        "http://khulafx.com"
-      }
-    : new[] {
-        "https://khulafx.com",
-        "https://www.khulafx.com",
-        "http://khulafx.com",
-        "http://108.181.161.170"
-      };
-
-// Configure CORS - ONLY ONE TIME!
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
     {
-        policy.WithOrigins(allowedOrigins)
-              .AllowAnyMethod()
-              .AllowAnyHeader()
-              .AllowCredentials();
+        policy.WithOrigins(
+            "http://localhost:4200",
+            "https://localhost:4200",
+            "https://khulafx.com",
+            "https://www.khulafx.com",
+            "http://khulafx.com"
+        )
+        .AllowAnyMethod()
+        .AllowAnyHeader()
+        .AllowCredentials()
+        .WithExposedHeaders("Authorization");
     });
 });
+
+
 
 // Configure JWT authentication
 var jwtSecret = builder.Configuration["Jwt:Secret"] ?? throw new InvalidOperationException("JWT Secret not configured");

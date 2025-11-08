@@ -8,6 +8,7 @@ using System.Security.Claims;
 using System.Text;
 using Microsoft.IdentityModel.Tokens;
 using Serilog;
+using Microsoft.AspNetCore.Authorization;
 
 namespace KhulaFxAdmin.Controllers
 {
@@ -35,10 +36,16 @@ namespace KhulaFxAdmin.Controllers
         }
 
         [HttpPost("google")]
+        [AllowAnonymous]
         public async Task<ActionResult<AuthResponse>> GoogleLogin([FromBody] GoogleLoginRequest request)
         {
             try
             {
+                // Verify Google token WITH audience
+                var settings = new GoogleJsonWebSignature.ValidationSettings
+                {
+                    Audience = new[] { _googleClientId }
+                };
                 // Verify Google token
                 var payload = await GoogleJsonWebSignature.ValidateAsync(request.Credential);
               
@@ -90,12 +97,12 @@ namespace KhulaFxAdmin.Controllers
             }
             catch (Exception ex)
             {
-                Log.Error(ex, "Error during Google login");
+                Log.Error(ex, "Error during Google login: {Message}", ex.Message);
                 return StatusCode(500, new AuthResponse
                 {
                     Success = false,
-                    Message = "An error occurred during login"
-                });
+                    Message = ex.Message  // Show actual error for debugging
+                }); ;
             }
         }
 
