@@ -1,8 +1,6 @@
 # Azure Pipeline for KhulaFxAdmin (Backend API)
-# Repository: KhulaFxAdmin
+# Checks out BOTH KhulaFxAdmin and KhulaFxTradeMonitor repositories
 # Deploys to: https://khulafx.com/api
-# Physical Path: C:\inetpub\wwwroot\khulafx.com\api
-# App Pool: KhulaFxAppPool
 
 trigger:
   branches:
@@ -50,25 +48,47 @@ stages:
       - job: BuildAPI
         displayName: 'Build .NET 8 API'
         steps:
+          # Checkout KhulaFxAdmin (main repo)
           - checkout: self
             fetchDepth: 1
+            path: s/KhulaFxAdmin
+
+          # Checkout KhulaFxTradeMonitor (dependency repo)
+          - checkout: git://KhulaFx/KhulaFxTradeMonitor
+            fetchDepth: 1
+            path: s/KhulaFxTradeMonitor
 
           - task: UseDotNet@2
             displayName: 'Install .NET 8 SDK'
             inputs:
               version: '8.x'
 
-          - task: DotNetCoreCLI@2
-            displayName: 'Restore Packages'
+          - task: PowerShell@2
+            displayName: 'Show Directory Structure'
             inputs:
-              command: 'restore'
-              projects: '**/*.csproj'
+              targetType: 'inline'
+              script: |
+                Write-Host "Directory structure:" -ForegroundColor Cyan
+                Get-ChildItem -Path "$(Build.SourcesDirectory)" -Recurse -Depth 1 | Where-Object { $_.PSIsContainer } | Select-Object FullName
 
           - task: DotNetCoreCLI@2
-            displayName: 'Build Project'
+            displayName: 'Build KhulaFxTradeMonitor First'
             inputs:
               command: 'build'
-              projects: '**/*.csproj'
+              projects: 's/KhulaFxTradeMonitor/**/*.csproj'
+              arguments: '--configuration Release'
+
+          - task: DotNetCoreCLI@2
+            displayName: 'Restore Packages for KhulaFxAdmin'
+            inputs:
+              command: 'restore'
+              projects: 's/KhulaFxAdmin/**/*.csproj'
+
+          - task: DotNetCoreCLI@2
+            displayName: 'Build KhulaFxAdmin Project'
+            inputs:
+              command: 'build'
+              projects: 's/KhulaFxAdmin/**/*.csproj'
               arguments: '--configuration Release --no-restore'
 
           - task: DotNetCoreCLI@2
@@ -76,7 +96,7 @@ stages:
             inputs:
               command: 'publish'
               publishWebProjects: true
-              projects: '**/*.csproj'
+              projects: 's/KhulaFxAdmin/**/*.csproj'
               arguments: '--configuration Release --output $(Build.ArtifactStagingDirectory) --no-build'
               zipAfterPublish: false
 
@@ -183,40 +203,48 @@ stages:
                     Write-Host "✅ Created directory" -ForegroundColor Green
                   }
                   
-                  # Wait for files to be unlocked
-                  Write-Host "Waiting for file locks to release..." -ForegroundColor Yellow
-                  Start-Sleep -Seconds 2
-                  
-                  # Clean destination with retry logic
+                  # Delete all files and folders EXCEPT web.config (which is locked)
                   Write-Host "Cleaning destination folder..." -ForegroundColor Yellow
-                  $retryCount = 0
-                  $maxRetries = 3
+                  $itemsToDelete = Get-ChildItem -Path $destinationPath -Force -ErrorAction SilentlyContinue
                   
-                  while ($retryCount -lt $maxRetries) {
+                  $deletedCount = 0
+                  foreach ($item in $itemsToDelete) {
+                    # Skip web.config - we'll overwrite it
+                    if ($item.Name -eq "web.config") {
+                      Write-Host "⏭️ Skipping locked: $($item.Name)" -ForegroundColor Yellow
+                      continue
+                    }
+                    
                     try {
-                      Get-ChildItem -Path $destinationPath -Recurse -File -Force -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction Stop
-                      Get-ChildItem -Path $destinationPath -Recurse -Directory -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction Stop
-                      Write-Host "✅ Destination cleaned" -ForegroundColor Green
-                      break
-                    }
-                    catch {
-                      $retryCount++
-                      if ($retryCount -lt $maxRetries) {
-                        Write-Host "⚠️ Retry $retryCount/$maxRetries - waiting for locks..." -ForegroundColor Yellow
-                        Start-Sleep -Seconds 3
+                      if ($item.PSIsContainer) {
+                        Remove-Item -Path $item.FullName -Recurse -Force -ErrorAction Stop
                       } else {
-                        Write-Warning "Could not fully clean destination, will overwrite files"
+                        Remove-Item -Path $item.FullName -Force -ErrorAction Stop
                       }
+                      $deletedCount++
+                    } catch {
+                      Write-Host "⚠️ Skipping: $($item.Name)" -ForegroundColor Yellow
+                    }
+                  }
+                  Write-Host "✅ Deleted $deletedCount items" -ForegroundColor Green
+                  
+                  Start-Sleep -Seconds 1
+                  
+                  # Copy files individually to handle locked files better
+                  Write-Host "Copying files..." -ForegroundColor Yellow
+                  
+                  Get-ChildItem -Path $sourcePath.FullName -Force | ForEach-Object {
+                    try {
+                      if ($_.PSIsContainer) {
+                        Copy-Item -Path $_.FullName -Destination $destinationPath -Recurse -Force -ErrorAction SilentlyContinue
+                      } else {
+                        Copy-Item -Path $_.FullName -Destination $destinationPath -Force -ErrorAction SilentlyContinue
+                      }
+                    } catch {
+                      Write-Host "⚠️ Could not copy $($_.Name)" -ForegroundColor Yellow
                     }
                   }
                   
-                  # Copy files
-                  Write-Host "Copying application files..." -ForegroundColor Yellow
-                  if ($sourcePath -is [object]) {
-                    Copy-Item -Path "$($sourcePath.FullName)\*" -Destination $destinationPath -Recurse -Force -ErrorAction Stop
-                  } else {
-                    Copy-Item -Path "$sourcePath\*" -Destination $destinationPath -Recurse -Force -ErrorAction Stop
-                  }
                   Write-Host "✅ Files copied successfully" -ForegroundColor Green
                   
                   # Verify deployment
@@ -226,13 +254,12 @@ stages:
                   Write-Host "✅ Deployment Complete!" -ForegroundColor Green
                   Write-Host "========================================" -ForegroundColor Green
                   Write-Host "Files deployed: $($files.Count)" -ForegroundColor Cyan
-                  Write-Host "Location: $destinationPath" -ForegroundColor Cyan
-                  Write-Host ""
                   
                   # Verify key files
                   $dllExists = Test-Path "$destinationPath\KhulaFxAdmin.dll"
                   $webConfigExists = Test-Path "$destinationPath\web.config"
                   
+                  Write-Host ""
                   Write-Host "Key files check:" -ForegroundColor Yellow
                   Write-Host "  ✅ KhulaFxAdmin.dll: $(if($dllExists){'Found'}else{'MISSING'})" -ForegroundColor $(if($dllExists){'Green'}else{'Red'})
                   Write-Host "  ✅ web.config: $(if($webConfigExists){'Found'}else{'MISSING'})" -ForegroundColor $(if($webConfigExists){'Green'}else{'Red'})
@@ -312,17 +339,8 @@ stages:
                   Write-Host "========================================" -ForegroundColor Green
                   Write-Host "✅ API is Live and Accessible!" -ForegroundColor Green
                   Write-Host "========================================" -ForegroundColor Green
-                  Write-Host "API URL: https://khulafx.com/api" -ForegroundColor Cyan
-                  Write-Host "Physical Path: C:\inetpub\wwwroot\khulafx.com\api" -ForegroundColor Cyan
                 } else {
-                  Write-Warning "API not responding yet"
-                  Write-Host "Files are deployed to:" -ForegroundColor Cyan
-                  Write-Host "  C:\inetpub\wwwroot\khulafx.com\api\" -ForegroundColor White
-                  Write-Host ""
-                  Write-Host "If API still doesn't work, check on VPS:" -ForegroundColor Yellow
-                  Write-Host "  1. App Pool 'KhulaFxAppPool' is running" -ForegroundColor White
-                  Write-Host "  2. IIS Logs: C:\inetpub\logs\LogFiles\W3SVC1\" -ForegroundColor White
-                  Write-Host "  3. .NET Runtime logs in: C:\inetpub\wwwroot\khulafx.com\api\logs\stdout_*" -ForegroundColor White
+                  Write-Warning "API not responding"
                 }
 
   - stage: NotifyComplete
@@ -347,12 +365,9 @@ stages:
                 $message += "🔢 *Build:* $(Build.BuildNumber)`n"
                 $message += "👤 *By:* $(Build.RequestedFor)`n"
                 $message += "🌿 *Branch:* $(Build.SourceBranchName)`n"
-                $message += "💬 *Commit:* $(Build.SourceVersionMessage)`n"
                 
                 if ($success) {
                   $message += "🌐 *URL:* https://khulafx.com/api`n"
-                  $message += "📁 *Path:* C:\inetpub\wwwroot\khulafx.com\api`n"
-                  $message += "🔄 *Pool:* KhulaFxAppPool`n"
                 }
                 
                 $duration = [math]::Round((New-TimeSpan -Start '$(System.PipelineStartTime)' -End (Get-Date)).TotalMinutes, 2)
