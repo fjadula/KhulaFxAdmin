@@ -193,7 +193,7 @@ stages:
                 Write-Host "Deploying to VPS..." -ForegroundColor Cyan
                 
                 $sourcePath = "$(Pipeline.Workspace)/backend-api"
-                $vpsIP = "$(vpsServer)"
+                $vpsIP = "108.181.161.170"
                 $destPath = "\\$vpsIP\c$\inetpub\wwwroot\khulafx.com\api"
                 
                 Write-Host "Source: $sourcePath" -ForegroundColor White
@@ -208,68 +208,28 @@ stages:
                   New-Item -ItemType Directory -Path $destPath -Force | Out-Null
                 }
                 
-                # Force delete old files using cmd (works better for locked files)
-                Write-Host "`nForce deleting old files..." -ForegroundColor Yellow
-                $securePassword = ConvertTo-SecureString "$(DEPLOY_PASSWORD)" -AsPlainText -Force
-                $credential = New-Object PSCredential("$(deployUser)", $securePassword)
-                
-                try {
-                  $session = New-PSSession -ComputerName $vpsIP -Credential $credential
-                  
-                  Invoke-Command -Session $session -ScriptBlock {
-                    param($destPath)
-                    
-                    Get-ChildItem -Path $destPath -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch '^(web\.config|logs)$' } | ForEach-Object {
-                      try {
-                        if ($_.PSIsContainer) {
-                          Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction Stop
-                        } else {
-                          Remove-Item -Path $_.FullName -Force -ErrorAction Stop
-                        }
-                      } catch {
-                        # If regular delete fails, use takeown
-                        try {
-                          cmd.exe /c "takeown /F `"$($_.FullName)`" /A /R /D Y" | Out-Null
-                          cmd.exe /c "icacls `"$($_.FullName)`" /grant:r *S-1-5-32-544:(F) /T /C /L" | Out-Null
-                          Remove-Item -Path $_.FullName -Force -Recurse -ErrorAction Stop
-                          Write-Host "✅ Force deleted: $($_.Name)" -ForegroundColor Green
-                        } catch {
-                          Write-Host "⚠️ Could not delete: $($_.Name)" -ForegroundColor Yellow
-                        }
-                      }
-                    }
-                  } -ArgumentList $destPath
-                  
-                  Remove-PSSession -Session $session
-                } catch {
-                  Write-Host "⚠️ Remote cleanup skipped: $_" -ForegroundColor Yellow
-                }
-                
-                Start-Sleep -Seconds 2
-                
-                Write-Host "`nCopying new files..." -ForegroundColor Cyan
+                Write-Host "`nCopying files..." -ForegroundColor Cyan
                 $copiedCount = 0
+                $failedCount = 0
                 
-                # Copy files (skip web.config)
+                # Copy files using cmd /Y (forces overwrite, handles locked files)
                 $sourceFiles | Where-Object { $_.Name -ne "web.config" } | ForEach-Object {
+                  $itemPath = $_.FullName
+                  $itemName = $_.Name
+                  
                   try {
                     if ($_.PSIsContainer) {
-                      Copy-Item -Path $_.FullName -Destination $destPath -Recurse -Force -ErrorAction Stop
+                      # For directories, use robocopy (more reliable)
+                      robocopy $itemPath "$destPath\$itemName" /E /Y /R:3 /W:1 | Out-Null
                     } else {
-                      Copy-Item -Path $_.FullName -Destination $destPath -Force -ErrorAction Stop
+                      # For files, use cmd copy with /Y flag
+                      cmd.exe /c "copy /Y `"$itemPath`" `"$destPath\`"" | Out-Null
                     }
-                    Write-Host "✅ Copied: $($_.Name)" -ForegroundColor Green
+                    Write-Host "✅ Copied: $itemName" -ForegroundColor Green
                     $copiedCount++
                   } catch {
-                    Write-Host "⚠️ Copy error on $($_.Name): trying with /Y flag" -ForegroundColor Yellow
-                    # Try copying with cmd /Y flag
-                    try {
-                      cmd.exe /c "copy /Y `"$($_.FullName)`" `"$destPath`"" | Out-Null
-                      Write-Host "✅ Copied (cmd): $($_.Name)" -ForegroundColor Green
-                      $copiedCount++
-                    } catch {
-                      Write-Host "❌ Failed: $($_.Name)" -ForegroundColor Red
-                    }
+                    Write-Host "❌ Failed: $itemName" -ForegroundColor Red
+                    $failedCount++
                   }
                 }
                 
@@ -278,6 +238,7 @@ stages:
                 $dllExists = Test-Path "$destPath\KhulaFxAdmin.dll"
                 Write-Host "`nVerification:" -ForegroundColor Yellow
                 Write-Host "  Files copied: $copiedCount" -ForegroundColor Cyan
+                Write-Host "  Files failed: $failedCount" -ForegroundColor $(if($failedCount -eq 0){'Green'}else{'Yellow'})
                 Write-Host "  DLL: $(if($dllExists){'✅ FOUND'}else{'❌ MISSING'})" -ForegroundColor $(if($dllExists){'Green'}else{'Red'})
                 
                 if (-not $dllExists) {
