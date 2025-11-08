@@ -1,6 +1,5 @@
-# Azure Pipeline for KhulaFxAdmin (Backend API)
-# Clones KhulaFxTradeMonitor from GitHub, builds it, then builds and deploys KhulaFxAdmin
-# Deploys to: https://khulafx.com/api
+# Azure Pipeline for KhulaFxAdminNew (Frontend Angular)
+# Auto-detects environment and builds with correct API endpoint
 
 trigger:
   branches:
@@ -15,149 +14,380 @@ variables:
   - group: 'Deployment-Secrets'
 
 stages:
-  - stage: Build
-    displayName: 'Build Backend API'
+  - stage: NotifyStart
+    displayName: 'Notify Build Started'
     jobs:
-      - job: BuildAPI
-        displayName: 'Build .NET 8 API'
+      - job: Telegram
+        displayName: 'Send Telegram Notification'
+        steps:
+          - task: PowerShell@2
+            displayName: 'Send Start Notification'
+            inputs:
+              targetType: 'inline'
+              script: |
+                $message = "🚀 *KhulaFxAdmin Frontend Build Started*`n`n"
+                $message += "📦 *Project:* KhulaFxAdminNew (Angular)`n"
+                $message += "🔢 *Build:* $(Build.BuildNumber)`n"
+                $message += "👤 *By:* $(Build.RequestedFor)`n"
+                $message += "🌿 *Branch:* $(Build.SourceBranchName)`n"
+                $message += "💬 *Commit:* $(Build.SourceVersionMessage)`n"
+                $message += "🔗 [View](https://dev.azure.com/KhulaFx/KhulaFxTrade/_build/results?buildId=$(Build.BuildId))"
+                
+                $body = @{ chat_id = "$(TELEGRAM_CHAT_ID)"; text = $message; parse_mode = "Markdown" } | ConvertTo-Json
+                
+                try {
+                  Invoke-RestMethod -Uri "https://api.telegram.org/bot$(TELEGRAM_BOT_TOKEN)/sendMessage" -Method Post -ContentType "application/json" -Body $body
+                } catch { Write-Warning "Telegram failed: $_" }
+
+  - stage: Build
+    displayName: 'Build Angular Application'
+    dependsOn: NotifyStart
+    jobs:
+      - job: BuildAngular
+        displayName: 'Build Angular'
         steps:
           - checkout: self
             fetchDepth: 1
 
-          - task: UseDotNet@2
-            displayName: 'Install .NET 8 SDK'
+          - task: NodeTool@0
+            displayName: 'Install Node.js'
             inputs:
-              version: '8.x'
+              versionSpec: '$(nodeVersion)'
 
           - task: PowerShell@2
-            displayName: 'Clone KhulaFxTradeMonitor from GitHub'
+            displayName: 'Set Node Memory Limit'
             inputs:
               targetType: 'inline'
               script: |
-                $sourceDir = "$(Build.SourcesDirectory)"
-                $tradeMonitorDir = Join-Path $sourceDir "KhulaFxTradeMonitor"
-                $gitUrl = "https://fjadula:$(GITHUB_PAT)@github.com/fjadula/KhulaFxTradeMonitor.git"
-                git clone $gitUrl $tradeMonitorDir
-                Write-Host "✅ Cloned KhulaFxTradeMonitor" -ForegroundColor Green
+                $env:NODE_OPTIONS="--max-old-space-size=4096"
+                Write-Host "Set Node memory limit to 4GB"
 
-          - task: DotNetCoreCLI@2
-            displayName: 'Build KhulaFxTradeMonitor'
+          - task: Npm@1
+            displayName: 'npm install'
             inputs:
-              command: 'build'
-              projects: '$(Build.SourcesDirectory)/KhulaFxTradeMonitor/**/*.csproj'
-              arguments: '--configuration Release'
-
-          - task: DotNetCoreCLI@2
-            displayName: 'Restore KhulaFxAdmin'
-            inputs:
-              command: 'restore'
-              projects: '$(Build.SourcesDirectory)/KhulaFxAdmin/KhulaFxAdmin.csproj'
-
-          - task: DotNetCoreCLI@2
-            displayName: 'Build KhulaFxAdmin'
-            inputs:
-              command: 'build'
-              projects: '$(Build.SourcesDirectory)/KhulaFxAdmin/KhulaFxAdmin.csproj'
-              arguments: '--configuration Release --no-restore'
+              command: 'install'
+              workingDir: '.'
 
           - task: PowerShell@2
-            displayName: 'Prepare Artifacts'
+            displayName: 'Generate environment.prod.ts with API endpoint'
             inputs:
               targetType: 'inline'
               script: |
-                $sourceDir = "$(Build.SourcesDirectory)\KhulaFxAdmin\bin\Release\net8.0"
-                $stagingDir = "$(Build.ArtifactStagingDirectory)"
-                Get-ChildItem -Path $sourceDir | ForEach-Object { Copy-Item -Path $_.FullName -Destination $stagingDir -Recurse -Force }
+                $apiUrl = "$(apiUrl)"
+                $googleClientId = "$(GOOGLE_CLIENT_ID)"
                 
-                $webConfig | Out-File -FilePath "$stagingDir\web.config" -Encoding utf8 -Force
-                Write-Host "✅ Artifacts prepared" -ForegroundColor Green
+                Write-Host "Generating environment file with API: $apiUrl" -ForegroundColor Cyan
+                
+                $envContent = @"
+                export const environment = {
+                  production: true,
+                  apiUrl: '$apiUrl',
+                  googleClientId: '$googleClientId'
+                };
+                "@
+                
+                $envPath = "$(Build.SourcesDirectory)/src/environments/environment.prod.ts"
+                
+                # Create directory if it doesn't exist
+                $envDir = Split-Path -Path $envPath
+                if (-not (Test-Path $envDir)) {
+                  New-Item -ItemType Directory -Path $envDir -Force | Out-Null
+                }
+                
+                $envContent | Out-File -FilePath $envPath -Encoding utf8 -Force
+                Write-Host "✅ Generated: $envPath" -ForegroundColor Green
+                Write-Host "Content:`n$envContent" -ForegroundColor Gray
+
+          - task: Npm@1
+            displayName: 'npm build (production with base-href)'
+            inputs:
+              command: 'custom'
+              workingDir: '.'
+              customCommand: 'run build -- --configuration production --base-href=/secure-admin/'
+
+          - task: PowerShell@2
+            displayName: 'Create Configuration Files'
+            inputs:
+              targetType: 'inline'
+              script: |
+                $distFolder = Get-ChildItem -Path "$(System.DefaultWorkingDirectory)" -Filter "browser" -Recurse -Directory | Where-Object { $_.FullName -like "*dist*" } | Select-Object -First 1
+                
+                if (-not $distFolder) {
+                  $distFolder = Get-ChildItem -Path "$(System.DefaultWorkingDirectory)/dist" -Directory | Select-Object -First 1
+                }
+                
+                if ($distFolder) {
+                  $distPath = $distFolder.FullName
+                  Write-Host "Found dist folder: $distPath"
+                } else {
+                  Write-Error "Could not find dist folder"
+                  exit 1
+                }
+                
+                $webConfig = @"
+                <?xml version="1.0" encoding="utf-8"?>
+                <configuration>
+                  <system.webServer>
+                    <rewrite>
+                      <rules>
+                        <rule name="Angular Routes" stopProcessing="true">
+                          <match url=".*" />
+                          <conditions logicalGrouping="MatchAll">
+                            <add input="{REQUEST_FILENAME}" matchType="IsFile" negate="true" />
+                            <add input="{REQUEST_FILENAME}" matchType="IsDirectory" negate="true" />
+                          </conditions>
+                          <action type="Rewrite" url="index.html" />
+                        </rule>
+                      </rules>
+                    </rewrite>
+                  </system.webServer>
+                </configuration>
+                "@
+                
+                $robotsTxt = @"
+                User-agent: *
+                Disallow: /
+                
+                User-agent: Googlebot
+                Disallow: /
+                
+                User-agent: Bingbot
+                Disallow: /
+                "@
+                
+                $webConfig | Out-File -FilePath "$distPath/web.config" -Encoding utf8 -Force
+                $robotsTxt | Out-File -FilePath "$distPath/robots.txt" -Encoding utf8 -Force
+                
+                Write-Host "✅ Clean web.config created" -ForegroundColor Green
+                Write-Host "✅ robots.txt created" -ForegroundColor Green
 
           - task: PublishBuildArtifacts@1
             displayName: 'Publish Artifacts'
             inputs:
-              pathToPublish: '$(Build.ArtifactStagingDirectory)'
-              artifactName: 'backend-api'
+              pathToPublish: '$(System.DefaultWorkingDirectory)/dist'
+              artifactName: 'frontend'
 
   - stage: Deploy
     displayName: 'Deploy to VPS'
     dependsOn: Build
     condition: succeeded()
     jobs:
-      - job: DeployAPI
+      - job: DeployFrontend
         displayName: 'Deploy to IIS'
         steps:
           - download: current
-            artifact: backend-api
+            artifact: frontend
 
           - task: PowerShell@2
-            displayName: 'Deploy via Remote Session'
+            displayName: 'Find Browser Folder'
             inputs:
               targetType: 'inline'
               script: |
-                Write-Host "Deploying to VPS..." -ForegroundColor Cyan
+                $browserFolder = Get-ChildItem -Path "$(Pipeline.Workspace)/frontend" -Filter "browser" -Recurse -Directory | Select-Object -First 1
                 
-                $sourcePath = "$(Pipeline.Workspace)\backend-api"
-                $vpsIP = "108.181.161.170"
-                $deployUser = "$(deployUser)"
-                $deployPass = "$(DEPLOY_PASSWORD)"
-                $destPath = "C:\inetpub\wwwroot\khulafx.com\api"
-                
-                Write-Host "Creating remote session..." -ForegroundColor Yellow
-                $credential = New-Object PSCredential("$vpsIP\$deployUser", (ConvertTo-SecureString $deployPass -AsPlainText -Force))
-                
-                try {
-                  $session = New-PSSession -ComputerName $vpsIP -Credential $credential -ErrorAction Stop
-                  Write-Host "✅ Connected" -ForegroundColor Green
-                  
-                  # Stop IIS
-                  Invoke-Command -Session $session -ScriptBlock { Stop-Service W3SVC -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2 }
-                  
-                  # Clear old files
-                  Invoke-Command -Session $session -ScriptBlock {
-                    param($path)
-                    Get-ChildItem $path -Force -ErrorAction Continue | Where-Object { $_.Name -notmatch '^(web\.config|logs)$' } | ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
-                  } -ArgumentList $destPath
-                  
-                  # Copy files
-                  Write-Host "Copying files..." -ForegroundColor Cyan
-                  Get-ChildItem -Path $sourcePath -Force | Where-Object { $_.Name -ne "web.config" } | ForEach-Object {
-                    Copy-Item -Path $_.FullName -Destination $destPath -ToSession $session -Recurse -Force -ErrorAction SilentlyContinue
-                    Write-Host "✅ $_" -ForegroundColor Green
-                  }
-                  
-                  # Start IIS
-                  Invoke-Command -Session $session -ScriptBlock { Start-Service W3SVC -ErrorAction SilentlyContinue; Start-Sleep -Seconds 3 }
-                  
-                  # Verify
-                  $dllExists = Invoke-Command -Session $session -ScriptBlock { param($p); Test-Path "$p\KhulaFxAdmin.dll" } -ArgumentList $destPath
-                  
-                  if ($dllExists) {
-                    Write-Host "`n✅ DEPLOYMENT SUCCESSFUL" -ForegroundColor Green
+                if ($browserFolder) {
+                  $deployPath = $browserFolder.FullName
+                  Write-Host "Found browser folder: $deployPath"
+                  Write-Host "##vso[task.setvariable variable=DeployPath]$deployPath"
+                } else {
+                  $firstDir = Get-ChildItem -Path "$(Pipeline.Workspace)/frontend" -Directory | Select-Object -First 1
+                  if ($firstDir) {
+                    $deployPath = $firstDir.FullName
+                    Write-Host "Using folder: $deployPath"
+                    Write-Host "##vso[task.setvariable variable=DeployPath]$deployPath"
                   } else {
-                    Write-Error "DLL not found at destination"
+                    Write-Error "Could not find deployment folder"
                     exit 1
                   }
+                }
+
+          - task: PowerShell@2
+            displayName: 'Deploy via Network Share'
+            inputs:
+              targetType: 'inline'
+              script: |
+                Write-Host "========================================" -ForegroundColor Cyan
+                Write-Host "Deploying Angular Frontend" -ForegroundColor Cyan
+                Write-Host "========================================" -ForegroundColor Cyan
+                
+                $sourcePath = "$(DeployPath)"
+                $vpsIP = "$(vpsServer)"
+                $destinationPath = "\\$vpsIP\c$\TRADERVPS\Sites\khulafx.com\secure-admin"
+                
+                Write-Host "Source: $sourcePath" -ForegroundColor White
+                Write-Host "Destination: $destinationPath" -ForegroundColor White
+                Write-Host ""
+                
+                try {
+                  if (-not (Test-Path $destinationPath)) {
+                    New-Item -ItemType Directory -Path $destinationPath -Force | Out-Null
+                    Write-Host "✅ Created directory" -ForegroundColor Green
+                  }
                   
-                  Remove-PSSession -Session $session
-                } catch {
-                  Write-Error "Deployment failed: $_"
+                  Write-Host "Cleaning destination folder..." -ForegroundColor Yellow
+                  $itemsToDelete = Get-ChildItem -Path $destinationPath -Force -ErrorAction SilentlyContinue
+                  
+                  $deletedCount = 0
+                  foreach ($item in $itemsToDelete) {
+                    if ($item.Name -eq "web.config") {
+                      Write-Host "⏭️ Skipping locked: $($item.Name)" -ForegroundColor Yellow
+                      continue
+                    }
+                    
+                    try {
+                      if ($item.PSIsContainer) {
+                        Remove-Item -Path $item.FullName -Recurse -Force -ErrorAction Stop
+                      } else {
+                        Remove-Item -Path $item.FullName -Force -ErrorAction Stop
+                      }
+                      $deletedCount++
+                    } catch {
+                      Write-Host "⚠️ Skipping: $($item.Name)" -ForegroundColor Yellow
+                    }
+                  }
+                  Write-Host "✅ Deleted $deletedCount items" -ForegroundColor Green
+                  
+                  Start-Sleep -Seconds 1
+                  
+                  Write-Host "Copying files..." -ForegroundColor Yellow
+                  Get-ChildItem -Path $sourcePath -Force | ForEach-Object {
+                    try {
+                      if ($_.PSIsContainer) {
+                        Copy-Item -Path $_.FullName -Destination $destinationPath -Recurse -Force -ErrorAction SilentlyContinue
+                      } else {
+                        Copy-Item -Path $_.FullName -Destination $destinationPath -Force -ErrorAction SilentlyContinue
+                      }
+                    } catch {
+                      Write-Host "⚠️ Could not copy $($_.Name)" -ForegroundColor Yellow
+                    }
+                  }
+                  
+                  Write-Host "✅ Files copied successfully" -ForegroundColor Green
+                  
+                  $deployedFiles = Get-ChildItem -Path $destinationPath -Recurse -File
+                  Write-Host ""
+                  Write-Host "========================================" -ForegroundColor Green
+                  Write-Host "✅ Deployment Complete!" -ForegroundColor Green
+                  Write-Host "========================================" -ForegroundColor Green
+                  Write-Host "Files deployed: $($deployedFiles.Count)" -ForegroundColor Cyan
+                  
+                  $indexExists = Test-Path "$destinationPath\index.html"
+                  $webConfigExists = Test-Path "$destinationPath\web.config"
+                  
+                  Write-Host ""
+                  Write-Host "Key files check:" -ForegroundColor Yellow
+                  Write-Host "  ✅ index.html: $(if($indexExists){'Found'}else{'MISSING'})" -ForegroundColor $(if($indexExists){'Green'}else{'Red'})
+                  Write-Host "  ✅ web.config: $(if($webConfigExists){'Found'}else{'MISSING'})" -ForegroundColor $(if($webConfigExists){'Green'}else{'Red'})
+                  
+                  if (-not $indexExists) {
+                    Write-Error "Critical: index.html is missing!"
+                    exit 1
+                  }
+                }
+                catch {
+                  Write-Host "========================================" -ForegroundColor Red
+                  Write-Host "❌ Deployment Failed!" -ForegroundColor Red
+                  Write-Host "========================================" -ForegroundColor Red
+                  Write-Error $_.Exception.Message
                   exit 1
                 }
 
           - task: PowerShell@2
-            displayName: 'Verify API'
+            displayName: 'Recycle App Pool'
             inputs:
               targetType: 'inline'
               script: |
-                Write-Host "Testing API..." -ForegroundColor Cyan
-                Start-Sleep -Seconds 5
+                Write-Host "Recycling IIS app pool..." -ForegroundColor Yellow
+                
+                $vpsIP = "$(vpsServer)"
+                $appPoolPath = "\\$vpsIP\c$\TRADERVPS\Sites\khulafx.com\secure-admin"
+                
                 try {
-                  $r = Invoke-WebRequest -Uri "http://108.181.161.170/api" -UseBasicParsing -TimeoutSec 10
-                  Write-Host "✅ API responding: $($r.StatusCode)" -ForegroundColor Green
-                } catch {
-                  if ($_.Exception.Response.StatusCode -eq 404) {
-                    Write-Host "✅ API running (404 expected)" -ForegroundColor Green
-                  } else {
-                    Write-Host "⚠️ API check: $($_.Exception.Message)" -ForegroundColor Yellow
+                  $marker = Join-Path $appPoolPath "web.config"
+                  $content = Get-Content -Path $marker -Raw
+                  $content | Out-File -FilePath $marker -Force
+                  Write-Host "✅ App pool recycle triggered" -ForegroundColor Green
+                  Start-Sleep -Seconds 3
+                }
+                catch {
+                  Write-Host "⚠️ Could not trigger recycle: $($_.Exception.Message)" -ForegroundColor Yellow
+                }
+
+          - task: PowerShell@2
+            displayName: 'Verify Website'
+            inputs:
+              targetType: 'inline'
+              script: |
+                Write-Host "Waiting for IIS to initialize..." -ForegroundColor Yellow
+                Start-Sleep -Seconds 8
+                
+                Write-Host "Testing website accessibility..." -ForegroundColor Yellow
+                Write-Host ""
+                
+                $urls = @(
+                  "https://khulafx.com/secure-admin",
+                  "http://khulafx.com/secure-admin",
+                  "http://108.181.161.170/secure-admin"
+                )
+                
+                $success = $false
+                foreach ($url in $urls) {
+                  try {
+                    Write-Host "Testing: $url" -ForegroundColor Gray
+                    $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 20 -ErrorAction Stop
+                    Write-Host "  ✅ Status: $($response.StatusCode)" -ForegroundColor Green
+                    $success = $true
+                    break
+                  }
+                  catch {
+                    Write-Host "  ⚠️ $($_.Exception.Message)" -ForegroundColor Yellow
                   }
                 }
+                
+                Write-Host ""
+                if ($success) {
+                  Write-Host "========================================" -ForegroundColor Green
+                  Write-Host "✅ Website is Live and Accessible!" -ForegroundColor Green
+                  Write-Host "========================================" -ForegroundColor Green
+                  Write-Host "URL: https://khulafx.com/secure-admin" -ForegroundColor Cyan
+                } else {
+                  Write-Warning "Website not accessible"
+                }
+
+  - stage: NotifyComplete
+    displayName: 'Notify Completion'
+    dependsOn: Deploy
+    condition: always()
+    jobs:
+      - job: SendResult
+        displayName: 'Send Telegram Result'
+        steps:
+          - task: PowerShell@2
+            displayName: 'Send Notification'
+            inputs:
+              targetType: 'inline'
+              script: |
+                $success = "$(Agent.JobStatus)" -eq "Succeeded"
+                $icon = if ($success) { "✅" } else { "❌" }
+                $status = if ($success) { "SUCCESS" } else { "FAILED" }
+                
+                $message = "$icon *KhulaFxAdmin Frontend Deploy $status!*`n`n"
+                $message += "📦 *Project:* KhulaFxAdminNew (Angular)`n"
+                $message += "🔢 *Build:* $(Build.BuildNumber)`n"
+                $message += "👤 *By:* $(Build.RequestedFor)`n"
+                $message += "🌿 *Branch:* $(Build.SourceBranchName)`n"
+                
+                if ($success) {
+                  $message += "🌐 *URL:* https://khulafx.com/secure-admin`n"
+                  $message += "🔌 *API:* $(apiUrl)`n"
+                }
+                
+                $duration = [math]::Round((New-TimeSpan -Start '$(System.PipelineStartTime)' -End (Get-Date)).TotalMinutes, 2)
+                $message += "⏱️ *Duration:* $duration minutes`n"
+                $message += "🔗 [View Logs](https://dev.azure.com/KhulaFx/KhulaFxTrade/_build/results?buildId=$(Build.BuildId))"
+                
+                $body = @{ chat_id = "$(TELEGRAM_CHAT_ID)"; text = $message; parse_mode = "Markdown" } | ConvertTo-Json
+                
+                try {
+                  Invoke-RestMethod -Uri "https://api.telegram.org/bot$(TELEGRAM_BOT_TOKEN)/sendMessage" -Method Post -ContentType "application/json" -Body $body
+                } catch { Write-Warning "Telegram failed: $_" }
