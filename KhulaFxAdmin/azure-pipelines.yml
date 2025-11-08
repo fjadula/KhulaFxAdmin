@@ -15,35 +15,8 @@ variables:
   - group: 'Deployment-Secrets'
 
 stages:
-  - stage: NotifyStart
-    displayName: 'Notify Build Started'
-    jobs:
-      - job: Telegram
-        displayName: 'Send Telegram Notification'
-        steps:
-          - task: PowerShell@2
-            displayName: 'Send Start Notification'
-            inputs:
-              targetType: 'inline'
-              script: |
-                $message = "🚀 *KhulaFxAdmin API Build Started*`n`n"
-                $message += "📦 *Project:* KhulaFxAdmin (Backend API)`n"
-                $message += "🔢 *Build:* $(Build.BuildNumber)`n"
-                $message += "👤 *By:* $(Build.RequestedFor)`n"
-                $message += "🌿 *Branch:* $(Build.SourceBranchName)`n"
-                $message += "💬 *Commit:* $(Build.SourceVersionMessage)`n"
-                $message += "🔗 [View](https://dev.azure.com/KhulaFx/KhulaFxTrade/_build/results?buildId=$(Build.BuildId))"
-                
-                $body = @{ chat_id = "$(TELEGRAM_CHAT_ID)"; text = $message; parse_mode = "Markdown" } | ConvertTo-Json
-                
-                try {
-                  Invoke-RestMethod -Uri "https://api.telegram.org/bot$(TELEGRAM_BOT_TOKEN)/sendMessage" `
-                    -Method Post -ContentType "application/json" -Body $body
-                } catch { Write-Warning "Telegram failed: $_" }
-
   - stage: Build
     displayName: 'Build Backend API'
-    dependsOn: NotifyStart
     jobs:
       - job: BuildAPI
         displayName: 'Build .NET 8 API'
@@ -67,7 +40,6 @@ stages:
                 $tradeMonitorDir = Join-Path $sourceDir "KhulaFxTradeMonitor"
                 $githubPat = "$(GITHUB_PAT)"
                 
-                # Clone the repository with authentication
                 try {
                   $gitUrl = "https://fjadula:$githubPat@github.com/fjadula/KhulaFxTradeMonitor.git"
                   git clone $gitUrl $tradeMonitorDir
@@ -78,7 +50,6 @@ stages:
                   exit 1
                 }
                 
-                # Verify the clone
                 if (Test-Path $tradeMonitorDir) {
                   Write-Host "✅ KhulaFxTradeMonitor directory verified: $tradeMonitorDir" -ForegroundColor Green
                   Get-ChildItem -Path $tradeMonitorDir -Recurse -Include "*.csproj" | ForEach-Object {
@@ -98,69 +69,54 @@ stages:
               arguments: '--configuration Release'
 
           - task: PowerShell@2
-            displayName: 'Verify KhulaFxTradeMonitor DLL Location'
+            displayName: 'Verify KhulaFxTradeMonitor DLL'
             inputs:
               targetType: 'inline'
               script: |
-                Write-Host "Verifying KhulaFxTradeMonitor DLL..." -ForegroundColor Cyan
-                
                 $sourceDir = "$(Build.SourcesDirectory)"
                 $expectedDllPath = "$sourceDir\KhulaFxTradeMonitor\KhulaFxTradeMonitor\bin\Release\net8.0\KhulaFxTradeMonitor.dll"
                 
                 if (Test-Path $expectedDllPath) {
-                  Write-Host "✅ DLL found at expected location:" -ForegroundColor Green
-                  Write-Host "   $expectedDllPath" -ForegroundColor Green
-                  
-                  $dllInfo = Get-Item $expectedDllPath
-                  Write-Host "   Size: $($dllInfo.Length) bytes" -ForegroundColor Cyan
-                  Write-Host "   Modified: $($dllInfo.LastWriteTime)" -ForegroundColor Cyan
+                  Write-Host "✅ DLL found at: $expectedDllPath" -ForegroundColor Green
                 } else {
-                  Write-Error "❌ DLL not found at expected location: $expectedDllPath"
-                  
-                  # Search for it
-                  Write-Host "Searching for KhulaFxTradeMonitor.dll..." -ForegroundColor Yellow
-                  $found = Get-ChildItem -Path "$sourceDir/KhulaFxTradeMonitor" -Recurse -Include "KhulaFxTradeMonitor.dll" -ErrorAction SilentlyContinue
-                  if ($found) {
-                    Write-Host "Found at: $($found.FullName)" -ForegroundColor Cyan
-                  }
+                  Write-Error "❌ DLL not found"
                   exit 1
                 }
 
           - task: DotNetCoreCLI@2
-            displayName: 'Restore KhulaFxAdmin Packages'
+            displayName: 'Restore KhulaFxAdmin'
             inputs:
               command: 'restore'
-              projects: '$(Build.SourcesDirectory)/KhulaFxAdmin/**/*.csproj'
+              projects: '$(Build.SourcesDirectory)/KhulaFxAdmin/KhulaFxAdmin.csproj'
 
           - task: DotNetCoreCLI@2
-            displayName: 'Build KhulaFxAdmin Project'
+            displayName: 'Build KhulaFxAdmin'
             inputs:
               command: 'build'
-              projects: '$(Build.SourcesDirectory)/KhulaFxAdmin/**/*.csproj'
+              projects: '$(Build.SourcesDirectory)/KhulaFxAdmin/KhulaFxAdmin.csproj'
               arguments: '--configuration Release --no-restore'
 
           - task: DotNetCoreCLI@2
-            displayName: 'Publish for IIS'
+            displayName: 'Publish KhulaFxAdmin'
             inputs:
               command: 'publish'
-              publishWebProjects: true
-              projects: '$(Build.SourcesDirectory)/KhulaFxAdmin/**/*.csproj'
+              publishWebProjects: false
+              projects: '$(Build.SourcesDirectory)/KhulaFxAdmin/KhulaFxAdmin.csproj'
               arguments: '--configuration Release --output $(Build.ArtifactStagingDirectory) --no-build'
               zipAfterPublish: false
-              excludeDir: '$(Build.SourcesDirectory)/KhulaFxTradeMonitor'
 
           - task: PowerShell@2
-            displayName: 'Create web.config for IIS'
+            displayName: 'Verify and Create web.config'
             inputs:
               targetType: 'inline'
               script: |
-                # Find the published directory (usually first subdirectory)
-                $publishDir = Get-ChildItem -Path "$(Build.ArtifactStagingDirectory)" -Directory | Select-Object -First 1
+                Write-Host "Verifying published files..." -ForegroundColor Cyan
+                $stagingDir = "$(Build.ArtifactStagingDirectory)"
                 
-                if (-not $publishDir) {
-                  $publishDir = "$(Build.ArtifactStagingDirectory)"
-                }
+                $files = Get-ChildItem -Path $stagingDir -Recurse | Measure-Object
+                Write-Host "Files in staging: $($files.Count)" -ForegroundColor Green
                 
+                # Create web.config
                 $webConfig = @"
                 <?xml version="1.0" encoding="utf-8"?>
                 <configuration>
@@ -195,11 +151,9 @@ stages:
                 </configuration>
                 "@
                 
-                $webConfigPath = Join-Path $publishDir.FullName "web.config"
+                $webConfigPath = Join-Path $stagingDir "web.config"
                 $webConfig | Out-File -FilePath $webConfigPath -Encoding utf8 -Force
-                
-                Write-Host "✅ web.config created at: $webConfigPath" -ForegroundColor Green
-                Write-Host "📁 Publish directory: $($publishDir.FullName)" -ForegroundColor Cyan
+                Write-Host "✅ web.config created" -ForegroundColor Green
 
           - task: PublishBuildArtifacts@1
             displayName: 'Publish Artifacts'
@@ -219,213 +173,100 @@ stages:
             artifact: backend-api
 
           - task: PowerShell@2
-            displayName: 'Deploy via Network Share'
+            displayName: 'Deploy to VPS'
             inputs:
               targetType: 'inline'
               script: |
                 Write-Host "========================================" -ForegroundColor Cyan
-                Write-Host "Deploying KhulaFxAdmin API to VPS" -ForegroundColor Cyan
+                Write-Host "Deploying KhulaFxAdmin API" -ForegroundColor Cyan
                 Write-Host "========================================" -ForegroundColor Cyan
-                Write-Host ""
                 
-                # Find the published app folder (usually first subdirectory)
-                $sourcePath = Get-ChildItem -Path "$(Pipeline.Workspace)/backend-api" -Directory | Select-Object -First 1
-                
-                if (-not $sourcePath) {
-                  $sourcePath = "$(Pipeline.Workspace)/backend-api"
-                  Write-Host "Using root deployment path" -ForegroundColor Yellow
-                } else {
-                  Write-Host "Found published app: $($sourcePath.Name)" -ForegroundColor Green
-                }
-                
+                $sourcePath = "$(Pipeline.Workspace)/backend-api"
                 $vpsIP = "$(vpsServer)"
                 $destinationPath = "\\$vpsIP\c$\inetpub\wwwroot\khulafx.com\api"
                 
-                Write-Host "Source: $($sourcePath.FullName)" -ForegroundColor White
+                Write-Host "Source: $sourcePath" -ForegroundColor White
                 Write-Host "Destination: $destinationPath" -ForegroundColor White
-                Write-Host ""
                 
-                try {
-                  # Ensure directory exists
-                  if (-not (Test-Path $destinationPath)) {
-                    New-Item -ItemType Directory -Path $destinationPath -Force | Out-Null
-                    Write-Host "✅ Created directory" -ForegroundColor Green
-                  }
-                  
-                  # Delete all files and folders EXCEPT web.config (which is locked)
-                  Write-Host "Cleaning destination folder..." -ForegroundColor Yellow
-                  $itemsToDelete = Get-ChildItem -Path $destinationPath -Force -ErrorAction SilentlyContinue
-                  
-                  $deletedCount = 0
-                  foreach ($item in $itemsToDelete) {
-                    # Skip web.config - we'll overwrite it
-                    if ($item.Name -eq "web.config") {
-                      Write-Host "⏭️ Skipping locked: $($item.Name)" -ForegroundColor Yellow
-                      continue
+                # Ensure directory exists
+                if (-not (Test-Path $destinationPath)) {
+                  New-Item -ItemType Directory -Path $destinationPath -Force | Out-Null
+                  Write-Host "✅ Created directory" -ForegroundColor Green
+                }
+                
+                # Clean old files (skip web.config)
+                Write-Host "Cleaning old files..." -ForegroundColor Yellow
+                Get-ChildItem -Path $destinationPath -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne "web.config" } | ForEach-Object {
+                  try {
+                    if ($_.PSIsContainer) {
+                      Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                    } else {
+                      Remove-Item -Path $_.FullName -Force -ErrorAction SilentlyContinue
                     }
-                    
-                    try {
-                      if ($item.PSIsContainer) {
-                        Remove-Item -Path $item.FullName -Recurse -Force -ErrorAction Stop
-                      } else {
-                        Remove-Item -Path $item.FullName -Force -ErrorAction Stop
-                      }
-                      $deletedCount++
-                    } catch {
-                      Write-Host "⚠️ Skipping: $($item.Name)" -ForegroundColor Yellow
-                    }
-                  }
-                  Write-Host "✅ Deleted $deletedCount items" -ForegroundColor Green
-                  
-                  Start-Sleep -Seconds 1
-                  
-                  # Copy files individually to handle locked files better
-                  Write-Host "Copying files..." -ForegroundColor Yellow
-                  
-                  Get-ChildItem -Path $sourcePath.FullName -Force | ForEach-Object {
-                    try {
-                      if ($_.PSIsContainer) {
-                        Copy-Item -Path $_.FullName -Destination $destinationPath -Recurse -Force -ErrorAction SilentlyContinue
-                      } else {
-                        Copy-Item -Path $_.FullName -Destination $destinationPath -Force -ErrorAction SilentlyContinue
-                      }
-                    } catch {
-                      Write-Host "⚠️ Could not copy $($_.Name)" -ForegroundColor Yellow
-                    }
-                  }
-                  
-                  Write-Host "✅ Files copied successfully" -ForegroundColor Green
-                  
-                  # Verify deployment
-                  $files = Get-ChildItem -Path $destinationPath -Recurse -File
-                  Write-Host ""
-                  Write-Host "========================================" -ForegroundColor Green
-                  Write-Host "✅ Deployment Complete!" -ForegroundColor Green
-                  Write-Host "========================================" -ForegroundColor Green
-                  Write-Host "Files deployed: $($files.Count)" -ForegroundColor Cyan
-                  
-                  # Verify key files
-                  $dllExists = Test-Path "$destinationPath\KhulaFxAdmin.dll"
-                  $webConfigExists = Test-Path "$destinationPath\web.config"
-                  
-                  Write-Host ""
-                  Write-Host "Key files check:" -ForegroundColor Yellow
-                  Write-Host "  ✅ KhulaFxAdmin.dll: $(if($dllExists){'Found'}else{'MISSING'})" -ForegroundColor $(if($dllExists){'Green'}else{'Red'})
-                  Write-Host "  ✅ web.config: $(if($webConfigExists){'Found'}else{'MISSING'})" -ForegroundColor $(if($webConfigExists){'Green'}else{'Red'})
-                  
-                  if (-not $dllExists -or -not $webConfigExists) {
-                    Write-Error "Critical files missing!"
-                    exit 1
+                  } catch {}
+                }
+                
+                # Copy new files
+                Write-Host "Copying files..." -ForegroundColor Yellow
+                Get-ChildItem -Path $sourcePath -Force | ForEach-Object {
+                  if ($_.PSIsContainer) {
+                    Copy-Item -Path $_.FullName -Destination $destinationPath -Recurse -Force -ErrorAction SilentlyContinue
+                  } else {
+                    Copy-Item -Path $_.FullName -Destination $destinationPath -Force -ErrorAction SilentlyContinue
                   }
                 }
-                catch {
-                  Write-Host ""
-                  Write-Host "========================================" -ForegroundColor Red
-                  Write-Host "❌ Deployment Failed!" -ForegroundColor Red
-                  Write-Host "========================================" -ForegroundColor Red
-                  Write-Error $_.Exception.Message
+                
+                # Verify
+                $dllExists = Test-Path "$destinationPath\KhulaFxAdmin.dll"
+                $webConfigExists = Test-Path "$destinationPath\web.config"
+                
+                Write-Host ""
+                Write-Host "Verification:" -ForegroundColor Yellow
+                Write-Host "  KhulaFxAdmin.dll: $(if($dllExists){'✅ Found'}else{'❌ MISSING'})" -ForegroundColor $(if($dllExists){'Green'}else{'Red'})
+                Write-Host "  web.config: $(if($webConfigExists){'✅ Found'}else{'❌ MISSING'})" -ForegroundColor $(if($webConfigExists){'Green'}else{'Red'})
+                
+                if (-not $dllExists) {
+                  Write-Error "Critical: KhulaFxAdmin.dll not found!"
                   exit 1
                 }
 
           - task: PowerShell@2
-            displayName: 'Recycle App Pool'
+            displayName: 'Restart App Pool'
             inputs:
               targetType: 'inline'
               script: |
-                Write-Host "Recycling IIS app pool..." -ForegroundColor Yellow
-                
+                Write-Host "Restarting app pool..." -ForegroundColor Yellow
                 $vpsIP = "$(vpsServer)"
-                $netshare = "\\$vpsIP\c$\inetpub\wwwroot\khulafx.com\api"
-                
-                try {
-                  $marker = Join-Path $netshare "app_restart.txt"
-                  Get-Date | Out-File -FilePath $marker -Force
-                  Write-Host "✅ App pool recycle triggered" -ForegroundColor Green
-                  Start-Sleep -Seconds 3
-                }
-                catch {
-                  Write-Host "⚠️ Could not trigger recycle: $($_.Exception.Message)" -ForegroundColor Yellow
-                }
+                $marker = "\\$vpsIP\c$\inetpub\wwwroot\khulafx.com\api\app_restart.txt"
+                Get-Date | Out-File -FilePath $marker -Force
+                Start-Sleep -Seconds 3
+                Write-Host "✅ App pool restart triggered" -ForegroundColor Green
 
           - task: PowerShell@2
-            displayName: 'Verify API Deployment'
+            displayName: 'Verify Deployment'
             inputs:
               targetType: 'inline'
               script: |
-                Write-Host "Waiting for API to start..." -ForegroundColor Yellow
-                Start-Sleep -Seconds 10
-                
-                Write-Host "Testing API endpoints..." -ForegroundColor Yellow
-                Write-Host ""
+                Write-Host "Testing API..." -ForegroundColor Yellow
+                Start-Sleep -Seconds 5
                 
                 $urls = @(
                   "https://khulafx.com/api",
-                  "http://khulafx.com/api",
                   "http://108.181.161.170/api"
                 )
                 
-                $success = $false
                 foreach ($url in $urls) {
                   try {
-                    Write-Host "Testing: $url" -ForegroundColor Gray
-                    $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
-                    Write-Host "  ✅ Status: $($response.StatusCode)" -ForegroundColor Green
-                    $success = $true
-                  }
-                  catch {
-                    # 404 on /api is expected if no default route exists
+                    $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
+                    Write-Host "✅ $url: $($response.StatusCode)" -ForegroundColor Green
+                  } catch {
                     if ($_.Exception.Response.StatusCode -eq 404) {
-                      Write-Host "  ✅ Status: 404 (API is running, no default route)" -ForegroundColor Green
-                      $success = $true
+                      Write-Host "✅ $url: 404 (API running)" -ForegroundColor Green
                     } else {
-                      Write-Host "  ⚠️ $($_.Exception.Message)" -ForegroundColor Yellow
+                      Write-Host "⚠️ $url: $($_.Exception.Message)" -ForegroundColor Yellow
                     }
                   }
                 }
                 
                 Write-Host ""
-                if ($success) {
-                  Write-Host "========================================" -ForegroundColor Green
-                  Write-Host "✅ API is Live and Accessible!" -ForegroundColor Green
-                  Write-Host "========================================" -ForegroundColor Green
-                } else {
-                  Write-Warning "API not responding"
-                }
-
-  - stage: NotifyComplete
-    displayName: 'Notify Completion'
-    dependsOn: Deploy
-    condition: always()
-    jobs:
-      - job: SendResult
-        displayName: 'Send Telegram Result'
-        steps:
-          - task: PowerShell@2
-            displayName: 'Send Notification'
-            inputs:
-              targetType: 'inline'
-              script: |
-                $success = "$(Agent.JobStatus)" -eq "Succeeded"
-                $icon = if ($success) { "✅" } else { "❌" }
-                $status = if ($success) { "SUCCESS" } else { "FAILED" }
-                
-                $message = "$icon *KhulaFxAdmin API Deploy $status!*`n`n"
-                $message += "📦 *Project:* KhulaFxAdmin (Backend API)`n"
-                $message += "🔢 *Build:* $(Build.BuildNumber)`n"
-                $message += "👤 *By:* $(Build.RequestedFor)`n"
-                $message += "🌿 *Branch:* $(Build.SourceBranchName)`n"
-                
-                if ($success) {
-                  $message += "🌐 *URL:* https://khulafx.com/api`n"
-                }
-                
-                $duration = [math]::Round((New-TimeSpan -Start '$(System.PipelineStartTime)' -End (Get-Date)).TotalMinutes, 2)
-                $message += "⏱️ *Duration:* $duration minutes`n"
-                $message += "🔗 [View Logs](https://dev.azure.com/KhulaFx/KhulaFxTrade/_build/results?buildId=$(Build.BuildId))"
-                
-                $body = @{ chat_id = "$(TELEGRAM_CHAT_ID)"; text = $message; parse_mode = "Markdown" } | ConvertTo-Json
-                
-                try {
-                  Invoke-RestMethod -Uri "https://api.telegram.org/bot$(TELEGRAM_BOT_TOKEN)/sendMessage" `
-                    -Method Post -ContentType "application/json" -Body $body
-                } catch { Write-Warning "Telegram failed: $_" }
+                Write-Host "✅ Deployment Complete!" -ForegroundColor Green
