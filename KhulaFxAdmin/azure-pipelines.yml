@@ -76,30 +76,24 @@ stages:
                 try {
                   Invoke-Command -ComputerName $vps -Credential $cred -ScriptBlock {
                     net stop W3SVC
-                    Start-Sleep -Seconds 2
+                    Start-Sleep -Seconds 5
                   }
                   Write-Host "✅ IIS stopped" -ForegroundColor Green
                 } catch {
                   Write-Host "⚠️ Could not stop IIS: $_" -ForegroundColor Yellow
                 }
                 
-                Write-Host "`nClearing old files..." -ForegroundColor Yellow
-                $itemsDeleted = 0
-                Get-ChildItem -Path $dst -Force -ErrorAction Continue | Where-Object { $_.Name -ne "web.config" } | ForEach-Object {
-                  Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
-                  Write-Host "  Deleted: $($_.Name)"
-                  $itemsDeleted++
-                }
-                Write-Host "✅ Deleted $itemsDeleted items" -ForegroundColor Green
+                Write-Host "`nWaiting for file locks to release..." -ForegroundColor Yellow
+                Start-Sleep -Seconds 3
                 
-                Write-Host "`nCopying new files..." -ForegroundColor Yellow
-                $itemsCopied = 0
-                Get-ChildItem -Path $src -Force | ForEach-Object {
-                  Copy-Item -Path $_.FullName -Destination $dst -Recurse -Force -ErrorAction SilentlyContinue
-                  Write-Host "  ✅ $($_.Name)" -ForegroundColor Green
-                  $itemsCopied++
+                Write-Host "`nDeploying files with Robocopy..." -ForegroundColor Yellow
+                robocopy $src $dst /E /PURGE /R:5 /W:2 /NFL /NDL /NJH /NJS
+                
+                if ($LASTEXITCODE -le 1) {
+                  Write-Host "✅ Files copied successfully" -ForegroundColor Green
+                } else {
+                  Write-Host "⚠️ Robocopy code: $LASTEXITCODE" -ForegroundColor Yellow
                 }
-                Write-Host "✅ Copied $itemsCopied items" -ForegroundColor Green
                 
                 Write-Host "`nStarting IIS..." -ForegroundColor Yellow
                 try {
