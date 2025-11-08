@@ -194,77 +194,94 @@ stages:
                 
                 $sourcePath = "$(Pipeline.Workspace)/backend-api"
                 $vpsIP = "108.181.161.170"
-                $destPath = "\\$vpsIP\c$\inetpub\wwwroot\khulafx.com\api"
+                $netPath = "\\$vpsIP\c$\inetpub\wwwroot\khulafx.com\api"
                 
                 Write-Host "Source: $sourcePath" -ForegroundColor White
-                Write-Host "Destination: $destPath" -ForegroundColor White
+                Write-Host "Destination: $netPath" -ForegroundColor White
+                
+                # Map network drive with admin credentials
+                Write-Host "`nMapping network drive with admin credentials..." -ForegroundColor Yellow
+                
+                $deployUser = "$(deployUser)"
+                $deployPass = "$(DEPLOY_PASSWORD)"
+                $netCredential = "\\$vpsIP\deployer"
+                
+                try {
+                  # Use net use to establish connection with credentials
+                  net use $netPath /delete /Y 2>$null
+                  $result = net use $netPath $deployPass /user:$vpsIP\$deployUser /persistent:no
+                  Write-Host "✅ Network share authenticated" -ForegroundColor Green
+                } catch {
+                  Write-Host "⚠️ Net use warning (may be ok): $_" -ForegroundColor Yellow
+                }
                 
                 # Verify source
                 $sourceFiles = Get-ChildItem -Path $sourcePath -Force
-                Write-Host "Source files: $($sourceFiles.Count)" -ForegroundColor Cyan
+                Write-Host "`nSource files: $($sourceFiles.Count)" -ForegroundColor Cyan
                 
-                # Create destination if needed
-                if (-not (Test-Path $destPath)) {
-                  New-Item -ItemType Directory -Path $destPath -Force | Out-Null
-                }
-                
-                Write-Host "`nCopying files..." -ForegroundColor Cyan
-                $copiedCount = 0
-                $failedCount = 0
-                
-                # Copy files using cmd /Y (forces overwrite, handles locked files)
-                $sourceFiles | Where-Object { $_.Name -ne "web.config" } | ForEach-Object {
-                  $itemPath = $_.FullName
-                  $itemName = $_.Name
-                  
-                  try {
-                    if ($_.PSIsContainer) {
-                      # For directories, use robocopy (more reliable)
-                      robocopy $itemPath "$destPath\$itemName" /E /Y /R:3 /W:1 | Out-Null
-                    } else {
-                      # For files, use cmd copy with /Y flag
-                      cmd.exe /c "copy /Y `"$itemPath`" `"$destPath\`"" | Out-Null
-                    }
-                    Write-Host "✅ Copied: $itemName" -ForegroundColor Green
-                    $copiedCount++
-                  } catch {
-                    Write-Host "❌ Failed: $itemName" -ForegroundColor Red
-                    $failedCount++
-                  }
-                }
-                
-                # Verify
-                Start-Sleep -Seconds 2
-                
-                Write-Host "`nChecking destination files..." -ForegroundColor Cyan
-                $destFiles = Get-ChildItem -Path $destPath -Force -ErrorAction SilentlyContinue | Select-Object Name
-                Write-Host "Files at destination:" -ForegroundColor White
-                $destFiles | ForEach-Object { Write-Host "  $_" }
-                
-                # Check for DLL (case-insensitive)
-                $dllFile = Get-ChildItem -Path $destPath -Filter "*.dll" -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "KhulaFxAdmin" }
-                $dllExists = $null -ne $dllFile
-                
-                Write-Host "`nVerification:" -ForegroundColor Yellow
-                Write-Host "  Files copied: $copiedCount" -ForegroundColor Cyan
-                Write-Host "  Files failed: $failedCount" -ForegroundColor $(if($failedCount -eq 0){'Green'}else{'Yellow'})
-                
-                if ($dllFile) {
-                  Write-Host "  DLL found: ✅ $($dllFile.Name)" -ForegroundColor Green
-                } else {
-                  Write-Host "  DLL: ❌ NOT FOUND" -ForegroundColor Red
-                  Write-Host "`n  Searching for any DLL files..." -ForegroundColor Yellow
-                  Get-ChildItem -Path $destPath -Filter "*.dll" -Force | Select-Object -First 5
-                }
-                
-                if (-not $dllExists) {
-                  Write-Error "Deployment failed: KhulaFxAdmin DLL not found at destination"
-                  Write-Host "`nDestination path: $destPath" -ForegroundColor Yellow
-                  Write-Host "Directory exists: $(Test-Path $destPath)" -ForegroundColor Yellow
+                # Verify destination exists
+                if (-not (Test-Path $netPath)) {
+                  Write-Error "Destination not accessible: $netPath"
                   exit 1
                 }
                 
-                Write-Host "`n✅ Deployment successful!" -ForegroundColor Green
+                # Clear old files (except web.config and logs)
+                Write-Host "`nCleaning old files..." -ForegroundColor Yellow
+                Get-ChildItem -Path $netPath -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch '^(web\.config|logs)$' } | ForEach-Object {
+                  try {
+                    if ($_.PSIsContainer) {
+                      Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction Stop
+                    } else {
+                      Remove-Item -Path $_.FullName -Force -ErrorAction Stop
+                    }
+                    Write-Host "  Removed: $($_.Name)" -ForegroundColor Gray
+                  } catch {
+                    Write-Host "  ⚠️ Could not remove $($_.Name)" -ForegroundColor Yellow
+                  }
+                }
+                
+                Start-Sleep -Seconds 1
+                
+                # Copy all files
+                Write-Host "`nCopying files..." -ForegroundColor Cyan
+                $copiedCount = 0
+                
+                $sourceFiles | Where-Object { $_.Name -ne "web.config" } | ForEach-Object {
+                  try {
+                    if ($_.PSIsContainer) {
+                      Copy-Item -Path $_.FullName -Destination $netPath -Recurse -Force -ErrorAction Stop
+                    } else {
+                      Copy-Item -Path $_.FullName -Destination $netPath -Force -ErrorAction Stop
+                    }
+                    Write-Host "✅ $($_.Name)" -ForegroundColor Green
+                    $copiedCount++
+                  } catch {
+                    Write-Host "❌ $($_.Name): $_" -ForegroundColor Red
+                  }
+                }
+                
+                # Verify deployment
+                Start-Sleep -Seconds 2
+                Write-Host "`nVerifying deployment..." -ForegroundColor Cyan
+                
+                $destFiles = @(Get-ChildItem -Path $netPath -Force -ErrorAction SilentlyContinue)
+                $dllFile = $destFiles | Where-Object { $_.Name -like "*KhulaFxAdmin*.dll" }
+                
+                Write-Host "Files at destination: $($destFiles.Count)" -ForegroundColor White
+                Write-Host "DLL status: $(if($dllFile){'✅ FOUND'}else{'❌ MISSING'})" -ForegroundColor $(if($dllFile){'Green'}else{'Red'})
+                
+                if ($dllFile) {
+                  Write-Host "`n✅ Deployment successful!" -ForegroundColor Green
+                  Write-Host "DLL: $($dllFile.Name)" -ForegroundColor Green
+                } else {
+                  Write-Host "`nFiles at destination:" -ForegroundColor Yellow
+                  $destFiles | ForEach-Object { Write-Host "  $_" }
+                  Write-Error "Deployment failed: DLL not found"
+                  exit 1
+                }
+                
+                # Cleanup
+                net use $netPath /delete /Y 2>$null | Out-Null
 
           - task: PowerShell@2
             displayName: 'Verify Deployment'
