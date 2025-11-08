@@ -22,7 +22,7 @@
   </ItemGroup>
 
 	<ItemGroup>
-		<ProjectReference Include="..\..\KhulaFxTradeMonitor\KhulaFxTradeMonitor\KhulaFxTradeMonitor.csproj" />
+		<ProjectReference Include="..\..\..\KhulaFxTradeMonitor\KhulaFxTradeMonitor\KhulaFxTradeMonitor.csproj" />
 	</ItemGroup>
 
 </Project>
