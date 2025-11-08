@@ -97,6 +97,38 @@ stages:
               projects: '$(Build.SourcesDirectory)/KhulaFxTradeMonitor/**/*.csproj'
               arguments: '--configuration Release'
 
+          - task: PowerShell@2
+            displayName: 'Copy KhulaFxTradeMonitor DLL to expected location'
+            inputs:
+              targetType: 'inline'
+              script: |
+                Write-Host "Copying KhulaFxTradeMonitor DLL..." -ForegroundColor Cyan
+                
+                $sourceDir = "$(Build.SourcesDirectory)"
+                $dllSource = Get-ChildItem -Path "$sourceDir/KhulaFxTradeMonitor" -Recurse -Include "KhulaFxTradeMonitor.dll" -ErrorAction SilentlyContinue
+                
+                if ($dllSource) {
+                  Write-Host "Found DLL: $($dllSource.FullName)" -ForegroundColor Green
+                  
+                  # Create the expected directory structure
+                  $expectedDir = Join-Path $sourceDir "KhulaFxTradeMonitor\KhulaFxTradeMonitor\bin\Release\net8.0"
+                  if (-not (Test-Path $expectedDir)) {
+                    New-Item -ItemType Directory -Path $expectedDir -Force | Out-Null
+                    Write-Host "Created directory: $expectedDir" -ForegroundColor Green
+                  }
+                  
+                  # Copy the DLL
+                  Copy-Item -Path $dllSource.FullName -Destination $expectedDir -Force
+                  Write-Host "✅ DLL copied to: $expectedDir" -ForegroundColor Green
+                  
+                  # Verify
+                  if (Test-Path "$expectedDir\KhulaFxTradeMonitor.dll") {
+                    Write-Host "✅ DLL verified at expected location" -ForegroundColor Green
+                  }
+                } else {
+                  Write-Warning "⚠️ Could not find KhulaFxTradeMonitor.dll"
+                }
+
           - task: DotNetCoreCLI@2
             displayName: 'Restore KhulaFxAdmin Packages'
             inputs:
