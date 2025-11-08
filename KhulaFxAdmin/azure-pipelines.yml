@@ -2,17 +2,6 @@ trigger:
   - master
   - main
 
-resources:
-  repositories:
-    - repository: self
-      type: github
-      name: fjadula/KhulaFxAdmin
-      endpoint: github
-    - repository: TradeMonitor
-      type: github
-      name: fjadula/KhulaFxTradeMonitor
-      endpoint: github
-
 pool:
   name: Default
 
@@ -22,50 +11,27 @@ variables:
 stages:
   - stage: Build
     jobs:
-      - job: BuildBackend
+      - job: BuildJob
         steps:
           - checkout: self
 
-          - checkout: TradeMonitor
-            path: s/KhulaFxTradeMonitor
-
           - task: UseDotNet@2
-            displayName: Install .NET 8
             inputs:
               version: 8.x
-              packageType: sdk
 
           - task: DotNetCoreCLI@2
-            displayName: Restore NuGet packages
-            inputs:
-              command: restore
-              projects: |
-                $(Build.SourcesDirectory)/KhulaFxTradeMonitor/KhulaFxTradeMonitor.csproj
-                $(Build.SourcesDirectory)/KhulaFxAdmin/KhulaFxAdmin.csproj
-
-          - task: DotNetCoreCLI@2
-            displayName: Build KhulaFxTradeMonitor
             inputs:
               command: build
-              projects: $(Build.SourcesDirectory)/KhulaFxTradeMonitor/KhulaFxTradeMonitor.csproj
-              arguments: --configuration Release --no-restore
+              projects: KhulaFxAdmin/KhulaFxAdmin.csproj
+              arguments: --configuration Release
 
           - task: DotNetCoreCLI@2
-            displayName: Build KhulaFxAdmin
-            inputs:
-              command: build
-              projects: $(Build.SourcesDirectory)/KhulaFxAdmin/KhulaFxAdmin.csproj
-              arguments: --configuration Release --no-restore
-
-          - task: DotNetCoreCLI@2
-            displayName: Publish KhulaFxAdmin
             inputs:
               command: publish
-              projects: $(Build.SourcesDirectory)/KhulaFxAdmin/KhulaFxAdmin.csproj
+              projects: KhulaFxAdmin/KhulaFxAdmin.csproj
               arguments: --configuration Release --output $(Build.ArtifactStagingDirectory)
 
           - task: PublishBuildArtifacts@1
-            displayName: Publish Artifacts
             inputs:
               pathToPublish: $(Build.ArtifactStagingDirectory)
               artifactName: backend
@@ -73,13 +39,12 @@ stages:
   - stage: Deploy
     dependsOn: Build
     jobs:
-      - job: DeployBackend
+      - job: DeployJob
         steps:
           - download: current
             artifact: backend
 
           - task: PowerShell@2
-            displayName: Deploy to IIS
             inputs:
               targetType: inline
               script: |
@@ -87,19 +52,12 @@ stages:
                 $vps = "$(vpsServer)"
                 $dst = "\\$vps\c$\inetpub\wwwroot\khulafx.com\api"
                 
-                Write-Host "Deploying..." -ForegroundColor Cyan
-                
                 Get-ChildItem -Path $dst -Force -ErrorAction Continue | Where-Object { $_.Name -ne "web.config" } | ForEach-Object {
                   Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
                 }
                 
                 Get-ChildItem -Path $src -Force | ForEach-Object {
-                  if ($_.PSIsContainer) {
-                    Copy-Item -Path $_.FullName -Destination $dst -Recurse -Force
-                  } else {
-                    Copy-Item -Path $_.FullName -Destination $dst -Force
-                  }
-                  Write-Host "OK: $($_.Name)" -ForegroundColor Green
+                  Copy-Item -Path $_.FullName -Destination $dst -Recurse -Force -ErrorAction SilentlyContinue
                 }
                 
-                Write-Host "Complete" -ForegroundColor Green
+                Write-Host "Done" -ForegroundColor Green
