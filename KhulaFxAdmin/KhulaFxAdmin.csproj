@@ -22,7 +22,9 @@
   </ItemGroup>
 
 	<ItemGroup>
-		<ProjectReference Include="..\..\..\KhulaFxTradeMonitor\KhulaFxTradeMonitor\KhulaFxTradeMonitor.csproj" />
+		<Reference Include="KhulaFxTradeMonitor">
+			<HintPath>..\KhulaFxTradeMonitor\KhulaFxTradeMonitor\bin\Release\net8.0\KhulaFxTradeMonitor.dll</HintPath>
+		</Reference>
 	</ItemGroup>
 
 </Project>
