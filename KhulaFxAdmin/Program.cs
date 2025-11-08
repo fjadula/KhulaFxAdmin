@@ -19,11 +19,16 @@ builder.Services.AddSwaggerGen();
 var allowedOrigins = builder.Environment.IsDevelopment()
     ? new[] {
         "http://localhost:4200",
-        "http://108.181.161.170"
+        "http://localhost:3000",
+        "http://localhost:7222",
+        "https://khulafx.com",
+        "https://www.khulafx.com",
+        "http://khulafx.com"
       }
     : new[] {
         "https://khulafx.com",
         "https://www.khulafx.com",
+        "http://khulafx.com",
         "http://108.181.161.170"
       };
 
