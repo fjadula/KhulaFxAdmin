@@ -61,9 +61,6 @@ stages:
                 $username = "$(deployUser)"
                 $password = "$(DEPLOY_PASSWORD)"
                 
-                $secPassword = ConvertTo-SecureString $password -AsPlainText -Force
-                $cred = New-Object System.Management.Automation.PSCredential($username, $secPassword)
-                
                 Write-Host "========================================" -ForegroundColor Cyan
                 Write-Host "Deploying Backend" -ForegroundColor Cyan
                 Write-Host "========================================" -ForegroundColor Cyan
@@ -72,38 +69,21 @@ stages:
                 Write-Host "Destination: $dst" -ForegroundColor White
                 Write-Host ""
                 
-                Write-Host "Stopping IIS..." -ForegroundColor Yellow
-                try {
-                  Invoke-Command -ComputerName $vps -Credential $cred -ScriptBlock {
-                    net stop W3SVC
-                    Start-Sleep -Seconds 5
-                  }
-                  Write-Host "✅ IIS stopped" -ForegroundColor Green
-                } catch {
-                  Write-Host "⚠️ Could not stop IIS: $_" -ForegroundColor Yellow
-                }
-                
-                Write-Host "`nWaiting for file locks to release..." -ForegroundColor Yellow
-                Start-Sleep -Seconds 3
+                Write-Host "Authenticating with VPS..." -ForegroundColor Yellow
+                net use "\\$vps\c$" /user:"$vps\$username" "$password" /persistent:no | Out-Null
+                Write-Host "✅ Authenticated" -ForegroundColor Green
                 
                 Write-Host "`nDeploying files with Robocopy..." -ForegroundColor Yellow
                 robocopy $src $dst /E /PURGE /R:5 /W:2 /NFL /NDL /NJH /NJS
                 
-                if ($LASTEXITCODE -le 1) {
+                $robocopyCode = $LASTEXITCODE
+                if ($robocopyCode -le 1) {
                   Write-Host "✅ Files copied successfully" -ForegroundColor Green
+                } elseif ($robocopyCode -eq 2) {
+                  Write-Host "⚠️ Some files were skipped (typically OK)" -ForegroundColor Yellow
                 } else {
-                  Write-Host "⚠️ Robocopy code: $LASTEXITCODE" -ForegroundColor Yellow
-                }
-                
-                Write-Host "`nStarting IIS..." -ForegroundColor Yellow
-                try {
-                  Invoke-Command -ComputerName $vps -Credential $cred -ScriptBlock {
-                    net start W3SVC
-                    Start-Sleep -Seconds 3
-                  }
-                  Write-Host "✅ IIS started" -ForegroundColor Green
-                } catch {
-                  Write-Host "⚠️ Could not start IIS: $_" -ForegroundColor Yellow
+                  Write-Host "❌ Robocopy error code: $robocopyCode" -ForegroundColor Red
+                  exit 1
                 }
                 
                 Write-Host ""
@@ -111,3 +91,5 @@ stages:
                 Write-Host "✅ Deployment Complete!" -ForegroundColor Green
                 Write-Host "========================================" -ForegroundColor Green
                 Write-Host "API: https://khulafx.com/api" -ForegroundColor Cyan
+                
+                Write-Host "`nIIS will recycle automatically when files are detected" -ForegroundColor Cyan
