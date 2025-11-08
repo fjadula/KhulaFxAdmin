@@ -186,6 +186,47 @@ stages:
             artifact: backend-api
 
           - task: PowerShell@2
+            displayName: 'Stop IIS App Pool'
+            inputs:
+              targetType: 'inline'
+              script: |
+                Write-Host "Stopping IIS App Pool..." -ForegroundColor Yellow
+                
+                $vpsIP = "$(vpsServer)"
+                $appPoolName = "KhulaFxAppPool"
+                
+                # Use PSSession to stop app pool remotely
+                $securePassword = ConvertTo-SecureString "$(DEPLOY_PASSWORD)" -AsPlainText -Force
+                $credential = New-Object PSCredential("$(deployUser)", $securePassword)
+                
+                try {
+                  $session = New-PSSession -ComputerName $vpsIP -Credential $credential -ErrorAction Stop
+                  
+                  Invoke-Command -Session $session -ScriptBlock {
+                    param($poolName)
+                    $pool = Get-WebAppPool -Name $poolName -ErrorAction SilentlyContinue
+                    if ($pool) {
+                      if ($pool.State -eq "Started") {
+                        Stop-WebAppPool -Name $poolName
+                        Write-Host "✅ Stopped: $poolName" -ForegroundColor Green
+                        Start-Sleep -Seconds 3
+                      } else {
+                        Write-Host "App pool already stopped" -ForegroundColor Yellow
+                      }
+                    } else {
+                      Write-Host "App pool not found, continuing anyway" -ForegroundColor Yellow
+                    }
+                  } -ArgumentList $appPoolName
+                  
+                  Remove-PSSession -Session $session
+                } catch {
+                  Write-Host "⚠️ Could not stop app pool: $_" -ForegroundColor Yellow
+                  Write-Host "Continuing with deployment anyway..." -ForegroundColor Yellow
+                }
+                
+                Start-Sleep -Seconds 2
+
+          - task: PowerShell@2
             displayName: 'Deploy Files'
             inputs:
               targetType: 'inline'
@@ -210,13 +251,21 @@ stages:
                 }
                 
                 # Remove old files (except web.config and logs)
+                Write-Host "`nCleaning old files..." -ForegroundColor Yellow
                 Get-ChildItem -Path $destPath -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch '^(web\.config|logs)$' } | ForEach-Object {
-                  if ($_.PSIsContainer) {
-                    Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
-                  } else {
-                    Remove-Item -Path $_.FullName -Force -ErrorAction SilentlyContinue
+                  try {
+                    if ($_.PSIsContainer) {
+                      Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction Stop
+                    } else {
+                      Remove-Item -Path $_.FullName -Force -ErrorAction Stop
+                    }
+                  } catch {
+                    Write-Host "⚠️ Could not remove $($_.Name)" -ForegroundColor Yellow
                   }
                 }
+                
+                Write-Host "Copying new files..." -ForegroundColor Cyan
+                $copiedCount = 0
                 
                 # Copy files (skip web.config - it's locked by IIS)
                 $sourceFiles | Where-Object { $_.Name -ne "web.config" } | ForEach-Object {
@@ -227,6 +276,7 @@ stages:
                       Copy-Item -Path $_.FullName -Destination $destPath -Force -ErrorAction Stop
                     }
                     Write-Host "✅ Copied: $($_.Name)" -ForegroundColor Green
+                    $copiedCount++
                   } catch {
                     Write-Host "❌ Failed to copy $($_.Name): $_" -ForegroundColor Red
                   }
@@ -236,6 +286,7 @@ stages:
                 Start-Sleep -Seconds 2
                 $dllExists = Test-Path "$destPath\KhulaFxAdmin.dll"
                 Write-Host "`nVerification:" -ForegroundColor Yellow
+                Write-Host "  Files copied: $copiedCount" -ForegroundColor Cyan
                 Write-Host "  DLL: $(if($dllExists){'✅ FOUND'}else{'❌ MISSING'})" -ForegroundColor $(if($dllExists){'Green'}else{'Red'})
                 
                 if (-not $dllExists) {
@@ -244,6 +295,37 @@ stages:
                 }
                 
                 Write-Host "`n✅ Deployment successful!" -ForegroundColor Green
+
+          - task: PowerShell@2
+            displayName: 'Start IIS App Pool'
+            inputs:
+              targetType: 'inline'
+              script: |
+                Write-Host "Starting IIS App Pool..." -ForegroundColor Yellow
+                
+                $vpsIP = "$(vpsServer)"
+                $appPoolName = "KhulaFxAppPool"
+                
+                $securePassword = ConvertTo-SecureString "$(DEPLOY_PASSWORD)" -AsPlainText -Force
+                $credential = New-Object PSCredential("$(deployUser)", $securePassword)
+                
+                try {
+                  $session = New-PSSession -ComputerName $vpsIP -Credential $credential -ErrorAction Stop
+                  
+                  Invoke-Command -Session $session -ScriptBlock {
+                    param($poolName)
+                    $pool = Get-WebAppPool -Name $poolName -ErrorAction SilentlyContinue
+                    if ($pool) {
+                      Start-WebAppPool -Name $poolName
+                      Write-Host "✅ Started: $poolName" -ForegroundColor Green
+                      Start-Sleep -Seconds 3
+                    }
+                  } -ArgumentList $appPoolName
+                  
+                  Remove-PSSession -Session $session
+                } catch {
+                  Write-Host "⚠️ Could not start app pool: $_" -ForegroundColor Yellow
+                }
 
           - task: PowerShell@2
             displayName: 'Verify Deployment'
