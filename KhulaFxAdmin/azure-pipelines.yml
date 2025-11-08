@@ -98,35 +98,32 @@ stages:
               arguments: '--configuration Release'
 
           - task: PowerShell@2
-            displayName: 'Copy KhulaFxTradeMonitor DLL to expected location'
+            displayName: 'Verify KhulaFxTradeMonitor DLL Location'
             inputs:
               targetType: 'inline'
               script: |
-                Write-Host "Copying KhulaFxTradeMonitor DLL..." -ForegroundColor Cyan
+                Write-Host "Verifying KhulaFxTradeMonitor DLL..." -ForegroundColor Cyan
                 
                 $sourceDir = "$(Build.SourcesDirectory)"
-                $dllSource = Get-ChildItem -Path "$sourceDir/KhulaFxTradeMonitor" -Recurse -Include "KhulaFxTradeMonitor.dll" -ErrorAction SilentlyContinue
+                $expectedDllPath = "$sourceDir\KhulaFxTradeMonitor\KhulaFxTradeMonitor\bin\Release\net8.0\KhulaFxTradeMonitor.dll"
                 
-                if ($dllSource) {
-                  Write-Host "Found DLL: $($dllSource.FullName)" -ForegroundColor Green
+                if (Test-Path $expectedDllPath) {
+                  Write-Host "✅ DLL found at expected location:" -ForegroundColor Green
+                  Write-Host "   $expectedDllPath" -ForegroundColor Green
                   
-                  # Create the expected directory structure
-                  $expectedDir = Join-Path $sourceDir "KhulaFxTradeMonitor\KhulaFxTradeMonitor\bin\Release\net8.0"
-                  if (-not (Test-Path $expectedDir)) {
-                    New-Item -ItemType Directory -Path $expectedDir -Force | Out-Null
-                    Write-Host "Created directory: $expectedDir" -ForegroundColor Green
-                  }
-                  
-                  # Copy the DLL
-                  Copy-Item -Path $dllSource.FullName -Destination $expectedDir -Force
-                  Write-Host "✅ DLL copied to: $expectedDir" -ForegroundColor Green
-                  
-                  # Verify
-                  if (Test-Path "$expectedDir\KhulaFxTradeMonitor.dll") {
-                    Write-Host "✅ DLL verified at expected location" -ForegroundColor Green
-                  }
+                  $dllInfo = Get-Item $expectedDllPath
+                  Write-Host "   Size: $($dllInfo.Length) bytes" -ForegroundColor Cyan
+                  Write-Host "   Modified: $($dllInfo.LastWriteTime)" -ForegroundColor Cyan
                 } else {
-                  Write-Warning "⚠️ Could not find KhulaFxTradeMonitor.dll"
+                  Write-Error "❌ DLL not found at expected location: $expectedDllPath"
+                  
+                  # Search for it
+                  Write-Host "Searching for KhulaFxTradeMonitor.dll..." -ForegroundColor Yellow
+                  $found = Get-ChildItem -Path "$sourceDir/KhulaFxTradeMonitor" -Recurse -Include "KhulaFxTradeMonitor.dll" -ErrorAction SilentlyContinue
+                  if ($found) {
+                    Write-Host "Found at: $($found.FullName)" -ForegroundColor Cyan
+                  }
+                  exit 1
                 }
 
           - task: DotNetCoreCLI@2
