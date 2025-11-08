@@ -65,10 +65,12 @@ stages:
                 
                 $sourceDir = "$(Build.SourcesDirectory)"
                 $tradeMonitorDir = Join-Path $sourceDir "KhulaFxTradeMonitor"
+                $githubPat = "$(GITHUB_PAT)"
                 
-                # Clone the repository
+                # Clone the repository with authentication
                 try {
-                  git clone https://github.com/YOUR_GITHUB_USERNAME/KhulaFxTradeMonitor.git $tradeMonitorDir
+                  $gitUrl = "https://fjadula:$githubPat@github.com/fjadula/KhulaFxTradeMonitor.git"
+                  git clone $gitUrl $tradeMonitorDir
                   Write-Host "✅ Repository cloned successfully" -ForegroundColor Green
                 }
                 catch {
