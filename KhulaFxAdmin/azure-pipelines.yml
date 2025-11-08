@@ -186,47 +186,6 @@ stages:
             artifact: backend-api
 
           - task: PowerShell@2
-            displayName: 'Stop IIS App Pool'
-            inputs:
-              targetType: 'inline'
-              script: |
-                Write-Host "Stopping IIS App Pool..." -ForegroundColor Yellow
-                
-                $vpsIP = "$(vpsServer)"
-                $appPoolName = "KhulaFxAppPool"
-                
-                # Use PSSession to stop app pool remotely
-                $securePassword = ConvertTo-SecureString "$(DEPLOY_PASSWORD)" -AsPlainText -Force
-                $credential = New-Object PSCredential("$(deployUser)", $securePassword)
-                
-                try {
-                  $session = New-PSSession -ComputerName $vpsIP -Credential $credential -ErrorAction Stop
-                  
-                  Invoke-Command -Session $session -ScriptBlock {
-                    param($poolName)
-                    $pool = Get-WebAppPool -Name $poolName -ErrorAction SilentlyContinue
-                    if ($pool) {
-                      if ($pool.State -eq "Started") {
-                        Stop-WebAppPool -Name $poolName
-                        Write-Host "✅ Stopped: $poolName" -ForegroundColor Green
-                        Start-Sleep -Seconds 3
-                      } else {
-                        Write-Host "App pool already stopped" -ForegroundColor Yellow
-                      }
-                    } else {
-                      Write-Host "App pool not found, continuing anyway" -ForegroundColor Yellow
-                    }
-                  } -ArgumentList $appPoolName
-                  
-                  Remove-PSSession -Session $session
-                } catch {
-                  Write-Host "⚠️ Could not stop app pool: $_" -ForegroundColor Yellow
-                  Write-Host "Continuing with deployment anyway..." -ForegroundColor Yellow
-                }
-                
-                Start-Sleep -Seconds 2
-
-          - task: PowerShell@2
             displayName: 'Deploy Files'
             inputs:
               targetType: 'inline'
@@ -243,31 +202,55 @@ stages:
                 # Verify source
                 $sourceFiles = Get-ChildItem -Path $sourcePath -Force
                 Write-Host "Source files: $($sourceFiles.Count)" -ForegroundColor Cyan
-                $sourceFiles | ForEach-Object { Write-Host "  $_" }
                 
                 # Create destination if needed
                 if (-not (Test-Path $destPath)) {
                   New-Item -ItemType Directory -Path $destPath -Force | Out-Null
                 }
                 
-                # Remove old files (except web.config and logs)
-                Write-Host "`nCleaning old files..." -ForegroundColor Yellow
-                Get-ChildItem -Path $destPath -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch '^(web\.config|logs)$' } | ForEach-Object {
-                  try {
-                    if ($_.PSIsContainer) {
-                      Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction Stop
-                    } else {
-                      Remove-Item -Path $_.FullName -Force -ErrorAction Stop
+                # Force delete old files using cmd (works better for locked files)
+                Write-Host "`nForce deleting old files..." -ForegroundColor Yellow
+                $securePassword = ConvertTo-SecureString "$(DEPLOY_PASSWORD)" -AsPlainText -Force
+                $credential = New-Object PSCredential("$(deployUser)", $securePassword)
+                
+                try {
+                  $session = New-PSSession -ComputerName $vpsIP -Credential $credential
+                  
+                  Invoke-Command -Session $session -ScriptBlock {
+                    param($destPath)
+                    
+                    Get-ChildItem -Path $destPath -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch '^(web\.config|logs)$' } | ForEach-Object {
+                      try {
+                        if ($_.PSIsContainer) {
+                          Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction Stop
+                        } else {
+                          Remove-Item -Path $_.FullName -Force -ErrorAction Stop
+                        }
+                      } catch {
+                        # If regular delete fails, use takeown
+                        try {
+                          cmd.exe /c "takeown /F `"$($_.FullName)`" /A /R /D Y" | Out-Null
+                          cmd.exe /c "icacls `"$($_.FullName)`" /grant:r *S-1-5-32-544:(F) /T /C /L" | Out-Null
+                          Remove-Item -Path $_.FullName -Force -Recurse -ErrorAction Stop
+                          Write-Host "✅ Force deleted: $($_.Name)" -ForegroundColor Green
+                        } catch {
+                          Write-Host "⚠️ Could not delete: $($_.Name)" -ForegroundColor Yellow
+                        }
+                      }
                     }
-                  } catch {
-                    Write-Host "⚠️ Could not remove $($_.Name)" -ForegroundColor Yellow
-                  }
+                  } -ArgumentList $destPath
+                  
+                  Remove-PSSession -Session $session
+                } catch {
+                  Write-Host "⚠️ Remote cleanup skipped: $_" -ForegroundColor Yellow
                 }
                 
-                Write-Host "Copying new files..." -ForegroundColor Cyan
+                Start-Sleep -Seconds 2
+                
+                Write-Host "`nCopying new files..." -ForegroundColor Cyan
                 $copiedCount = 0
                 
-                # Copy files (skip web.config - it's locked by IIS)
+                # Copy files (skip web.config)
                 $sourceFiles | Where-Object { $_.Name -ne "web.config" } | ForEach-Object {
                   try {
                     if ($_.PSIsContainer) {
@@ -278,7 +261,15 @@ stages:
                     Write-Host "✅ Copied: $($_.Name)" -ForegroundColor Green
                     $copiedCount++
                   } catch {
-                    Write-Host "❌ Failed to copy $($_.Name): $_" -ForegroundColor Red
+                    Write-Host "⚠️ Copy error on $($_.Name): trying with /Y flag" -ForegroundColor Yellow
+                    # Try copying with cmd /Y flag
+                    try {
+                      cmd.exe /c "copy /Y `"$($_.FullName)`" `"$destPath`"" | Out-Null
+                      Write-Host "✅ Copied (cmd): $($_.Name)" -ForegroundColor Green
+                      $copiedCount++
+                    } catch {
+                      Write-Host "❌ Failed: $($_.Name)" -ForegroundColor Red
+                    }
                   }
                 }
                 
@@ -295,37 +286,6 @@ stages:
                 }
                 
                 Write-Host "`n✅ Deployment successful!" -ForegroundColor Green
-
-          - task: PowerShell@2
-            displayName: 'Start IIS App Pool'
-            inputs:
-              targetType: 'inline'
-              script: |
-                Write-Host "Starting IIS App Pool..." -ForegroundColor Yellow
-                
-                $vpsIP = "$(vpsServer)"
-                $appPoolName = "KhulaFxAppPool"
-                
-                $securePassword = ConvertTo-SecureString "$(DEPLOY_PASSWORD)" -AsPlainText -Force
-                $credential = New-Object PSCredential("$(deployUser)", $securePassword)
-                
-                try {
-                  $session = New-PSSession -ComputerName $vpsIP -Credential $credential -ErrorAction Stop
-                  
-                  Invoke-Command -Session $session -ScriptBlock {
-                    param($poolName)
-                    $pool = Get-WebAppPool -Name $poolName -ErrorAction SilentlyContinue
-                    if ($pool) {
-                      Start-WebAppPool -Name $poolName
-                      Write-Host "✅ Started: $poolName" -ForegroundColor Green
-                      Start-Sleep -Seconds 3
-                    }
-                  } -ArgumentList $appPoolName
-                  
-                  Remove-PSSession -Session $session
-                } catch {
-                  Write-Host "⚠️ Could not start app pool: $_" -ForegroundColor Yellow
-                }
 
           - task: PowerShell@2
             displayName: 'Verify Deployment'
