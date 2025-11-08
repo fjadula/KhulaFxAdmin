@@ -16,30 +16,36 @@ stages:
           - checkout: self
 
           - task: UseDotNet@2
+            displayName: Install .NET 8
             inputs:
               version: 8.x
 
           - task: DotNetCoreCLI@2
+            displayName: Build Release
             inputs:
               command: build
               projects: KhulaFxAdmin/KhulaFxAdmin.csproj
               arguments: --configuration Release
 
           - task: DotNetCoreCLI@2
+            displayName: Publish Release
             inputs:
               command: publish
               projects: KhulaFxAdmin/KhulaFxAdmin.csproj
               arguments: --configuration Release --output $(Build.ArtifactStagingDirectory)
 
           - task: PublishBuildArtifacts@1
+            displayName: Publish Artifacts
             inputs:
               pathToPublish: $(Build.ArtifactStagingDirectory)
               artifactName: backend
 
   - stage: Deploy
+    displayName: Deploy to VPS
     dependsOn: Build
     jobs:
       - job: DeployJob
+        displayName: Deploy Backend
         steps:
           - download: current
             artifact: backend
@@ -52,29 +58,62 @@ stages:
                 $src = "$(Pipeline.Workspace)/backend"
                 $vps = "$(vpsServer)"
                 $dst = "\\$vps\c$\inetpub\wwwroot\khulafx.com\api"
+                $username = "$(deployUser)"
+                $password = "$(DEPLOY_PASSWORD)"
+                
+                $secPassword = ConvertTo-SecureString $password -AsPlainText -Force
+                $cred = New-Object System.Management.Automation.PSCredential($username, $secPassword)
+                
+                Write-Host "========================================" -ForegroundColor Cyan
+                Write-Host "Deploying Backend" -ForegroundColor Cyan
+                Write-Host "========================================" -ForegroundColor Cyan
+                Write-Host "Source: $src" -ForegroundColor White
+                Write-Host "VPS: $vps" -ForegroundColor White
+                Write-Host "Destination: $dst" -ForegroundColor White
+                Write-Host ""
                 
                 Write-Host "Stopping IIS..." -ForegroundColor Yellow
-                Invoke-Command -ComputerName $vps -ScriptBlock {
-                  net stop W3SVC
-                  Start-Sleep -Seconds 2
+                try {
+                  Invoke-Command -ComputerName $vps -Credential $cred -ScriptBlock {
+                    net stop W3SVC
+                    Start-Sleep -Seconds 2
+                  }
+                  Write-Host "✅ IIS stopped" -ForegroundColor Green
+                } catch {
+                  Write-Host "⚠️ Could not stop IIS: $_" -ForegroundColor Yellow
                 }
                 
-                Write-Host "Clearing old files..." -ForegroundColor Yellow
+                Write-Host "`nClearing old files..." -ForegroundColor Yellow
+                $itemsDeleted = 0
                 Get-ChildItem -Path $dst -Force -ErrorAction Continue | Where-Object { $_.Name -ne "web.config" } | ForEach-Object {
                   Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
                   Write-Host "  Deleted: $($_.Name)"
+                  $itemsDeleted++
                 }
+                Write-Host "✅ Deleted $itemsDeleted items" -ForegroundColor Green
                 
-                Write-Host "Copying new files..." -ForegroundColor Yellow
+                Write-Host "`nCopying new files..." -ForegroundColor Yellow
+                $itemsCopied = 0
                 Get-ChildItem -Path $src -Force | ForEach-Object {
                   Copy-Item -Path $_.FullName -Destination $dst -Recurse -Force -ErrorAction SilentlyContinue
-                  Write-Host "  Copied: $($_.Name)" -ForegroundColor Green
+                  Write-Host "  ✅ $($_.Name)" -ForegroundColor Green
+                  $itemsCopied++
+                }
+                Write-Host "✅ Copied $itemsCopied items" -ForegroundColor Green
+                
+                Write-Host "`nStarting IIS..." -ForegroundColor Yellow
+                try {
+                  Invoke-Command -ComputerName $vps -Credential $cred -ScriptBlock {
+                    net start W3SVC
+                    Start-Sleep -Seconds 3
+                  }
+                  Write-Host "✅ IIS started" -ForegroundColor Green
+                } catch {
+                  Write-Host "⚠️ Could not start IIS: $_" -ForegroundColor Yellow
                 }
                 
-                Write-Host "Starting IIS..." -ForegroundColor Yellow
-                Invoke-Command -ComputerName $vps -ScriptBlock {
-                  net start W3SVC
-                  Start-Sleep -Seconds 3
-                }
-                
-                Write-Host "Deployment complete" -ForegroundColor Green
+                Write-Host ""
+                Write-Host "========================================" -ForegroundColor Green
+                Write-Host "✅ Deployment Complete!" -ForegroundColor Green
+                Write-Host "========================================" -ForegroundColor Green
+                Write-Host "API: https://khulafx.com/api" -ForegroundColor Cyan
