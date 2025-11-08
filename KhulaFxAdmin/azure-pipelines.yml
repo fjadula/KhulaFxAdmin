@@ -166,6 +166,44 @@ stages:
             artifact: backend-api
 
           - task: PowerShell@2
+            displayName: 'Stop IIS App Pool'
+            inputs:
+              targetType: 'inline'
+              script: |
+                Write-Host "Stopping IIS app pool on VPS..." -ForegroundColor Yellow
+                
+                $vpsIP = "108.181.161.170"
+                $deployUser = "$(deployUser)"
+                $deployPass = "$(DEPLOY_PASSWORD)"
+                $appPoolName = "KhulaFxAppPool"
+                
+                $credential = New-Object PSCredential("$vpsIP\$deployUser", (ConvertTo-SecureString $deployPass -AsPlainText -Force))
+                
+                try {
+                  $session = New-PSSession -ComputerName $vpsIP -Credential $credential -ErrorAction Stop
+                  
+                  Invoke-Command -Session $session -ScriptBlock {
+                    param($poolName)
+                    Import-Module WebAdministration -ErrorAction SilentlyContinue
+                    
+                    $pool = Get-WebAppPool -Name $poolName -ErrorAction SilentlyContinue
+                    if ($pool -and $pool.State -eq "Started") {
+                      Stop-WebAppPool -Name $poolName
+                      Write-Host "✅ App pool stopped" -ForegroundColor Green
+                      Start-Sleep -Seconds 3
+                    } else {
+                      Write-Host "⚠️ App pool not running or not found" -ForegroundColor Yellow
+                    }
+                  } -ArgumentList $appPoolName
+                  
+                  Remove-PSSession -Session $session
+                  Start-Sleep -Seconds 2
+                } catch {
+                  Write-Host "⚠️ Could not stop app pool: $_" -ForegroundColor Yellow
+                  Write-Host "Continuing anyway..." -ForegroundColor Yellow
+                }
+
+          - task: PowerShell@2
             displayName: 'Deploy to VPS'
             inputs:
               targetType: 'inline'
@@ -222,6 +260,37 @@ stages:
                   $destFiles | Select-Object -First 10 | ForEach-Object { Write-Host "  $_" }
                   Write-Error "Deployment failed: DLL not found"
                   exit 1
+                }
+
+          - task: PowerShell@2
+            displayName: 'Start IIS App Pool'
+            inputs:
+              targetType: 'inline'
+              script: |
+                Write-Host "Starting IIS app pool..." -ForegroundColor Yellow
+                
+                $vpsIP = "108.181.161.170"
+                $deployUser = "$(deployUser)"
+                $deployPass = "$(DEPLOY_PASSWORD)"
+                $appPoolName = "KhulaFxAppPool"
+                
+                $credential = New-Object PSCredential("$vpsIP\$deployUser", (ConvertTo-SecureString $deployPass -AsPlainText -Force))
+                
+                try {
+                  $session = New-PSSession -ComputerName $vpsIP -Credential $credential -ErrorAction Stop
+                  Invoke-Command -Session $session -ScriptBlock {
+                    param($poolName)
+                    Import-Module WebAdministration -ErrorAction SilentlyContinue
+                    $pool = Get-WebAppPool -Name $poolName -ErrorAction SilentlyContinue
+                    if ($pool) {
+                      Start-WebAppPool -Name $poolName
+                      Write-Host "✅ App pool started" -ForegroundColor Green
+                      Start-Sleep -Seconds 3
+                    }
+                  } -ArgumentList $appPoolName
+                  Remove-PSSession -Session $session
+                } catch {
+                  Write-Host "⚠️ Could not start: $_" -ForegroundColor Yellow
                 }
 
           - task: PowerShell@2
