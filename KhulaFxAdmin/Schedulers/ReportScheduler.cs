@@ -1,6 +1,6 @@
 ﻿using Quartz;
 using KhulaFxAdmin.Services;
-// using KhulaFxTradeMonitor; // Your main app's notifiers
+using KhulaFxTradeMonitor; // Your main app's notifiers
 using Serilog;
 namespace KhulaFxAdmin.Schedulers
 {
