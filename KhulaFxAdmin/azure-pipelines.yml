@@ -1,7 +1,6 @@
 # ========================================================
-# Azure DevOps Pipeline for KhulaFxAdmin
-# Windows Service Deployment
-# Depends on KhulaFxTradeMonitor.dll from Pipeline A
+# Azure DevOps Pipeline B for KhulaFxAdmin
+# Builds and references KhulaFxTradeMonitor.dll from Pipeline A
 # ========================================================
 
 trigger:
@@ -16,49 +15,20 @@ variables:
     value: 'Release'
   - name: dotnetVersion
     value: '8.x'
-  - name: serviceName
-    value: 'KhulaFxAdmin'
-  - name: deployPath
-    value: 'C:\Services\KhulaFxAdmin'
-  - name: vpsServer
-    value: '108.181.161.170'
+  - name: pipelineAProject
+    value: 'KhulaFxTrade'
+  - name: pipelineAName
+    value: 'fjadula.KhulaFxTradeMonitor'
 
 stages:
 # ================================
-# DOWNLOAD DLL STAGE
+# RESTORE AND DOWNLOAD DLL
 # ================================
-- stage: DownloadDLL
-  displayName: 'Download KhulaFxTradeMonitor DLL'
+- stage: Restore
+  displayName: 'Restore & Download DLL'
   jobs:
-  - job: DownloadDLLJob
-    pool:
-      name: 'Default'
-    steps:
-    - task: DownloadPipelineArtifact@2
-      displayName: 'Download KhulaFxTradeMonitor DLL from Pipeline A'
-      inputs:
-        buildType: 'specific'
-        project: 'KhulaFxTrade'
-        pipeline: fjadula.KhulaFxTradeMonitor
-        buildVersionToDownload: 'latest'
-        artifactName: 'KhulaFxTradeMonitorDLL'
-        targetPath: '$(Build.SourcesDirectory)\libs'
-
-    - task: PowerShell@2
-      displayName: 'List downloaded DLL'
-      inputs:
-        targetType: inline
-        script: |
-          Get-ChildItem "$(Build.SourcesDirectory)\libs" -Recurse | ForEach-Object { Write-Host $_.FullName }
-
-# ================================
-# BUILD STAGE
-# ================================
-- stage: Build
-  displayName: 'Build KhulaFxAdmin'
-  dependsOn: DownloadDLL
-  jobs:
-  - job: BuildJob
+  - job: RestoreJob
+    displayName: 'Restore NuGet & Download DLL'
     pool:
       name: 'Default'
     steps:
@@ -72,161 +42,130 @@ stages:
         version: $(dotnetVersion)
 
     # -----------------------------
-    # Build the Admin project
+    # Download DLL artifact from Pipeline A
+    # -----------------------------
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Download KhulaFxTradeMonitor.dll from Pipeline A'
+      inputs:
+        source: 'specific'
+        project: $(pipelineAProject)
+        pipeline: $(pipelineAName)
+        runVersion: 'latest'
+        artifact: 'KhulaFxTradeMonitorDLL'
+        path: '$(Build.SourcesDirectory)\libs'
+
+    # -----------------------------
+    # List downloaded files
     # -----------------------------
     - task: PowerShell@2
-      displayName: 'Build .NET Project'
+      displayName: 'List downloaded DLL files'
       inputs:
         targetType: inline
         script: |
-          $dllPath = "$(Build.SourcesDirectory)\libs"
-          Write-Host "Referencing external DLL from: $dllPath"
-          
-          # Ensure csproj references the DLL dynamically if needed
-          dotnet build "$(Build.SourcesDirectory)\KhulaFxAdmin\KhulaFxAdmin.csproj" `
-            -c $(buildConfiguration) `
-            /p:ReferencePath="$dllPath"
-
-    # -----------------------------
-    # Publish artifact for VPS deployment
-    # -----------------------------
-    - task: PowerShell@2
-      displayName: 'Publish .NET Project'
-      inputs:
-        targetType: inline
-        script: |
-          $publishFolder = "$(Build.ArtifactStagingDirectory)\admin"
-          Write-Host "Publishing project to $publishFolder"
-
-          dotnet publish "$(Build.SourcesDirectory)\KhulaFxAdmin\KhulaFxAdmin.csproj" `
-            -c $(buildConfiguration) `
-            -r win-x64 `
-            --self-contained true `
-            -o "$publishFolder"
-
-          if (!(Test-Path $publishFolder)) {
-            Write-Error "Publish folder not found: $publishFolder"
-            exit 1
-          }
-
-    - task: PowerShell@2
-      displayName: 'List files in artifact folder'
-      inputs:
-        targetType: inline
-        script: |
-          Get-ChildItem "$(Build.ArtifactStagingDirectory)\admin" -Recurse | ForEach-Object { Write-Host $_.FullName }
-
-    - task: PublishBuildArtifacts@1
-      displayName: 'Publish for VPS Deployment'
-      inputs:
-        pathToPublish: '$(Build.ArtifactStagingDirectory)/admin'
-        artifactName: 'KhulaFxAdmin'
-        publishLocation: 'Container'
+          Write-Host "DLL files in libs folder:"
+          Get-ChildItem "$(Build.SourcesDirectory)\libs" -Recurse | ForEach-Object { Write-Host $_.FullName }
 
 # ================================
-# DEPLOY STAGE
+# INJECT DLL REFERENCE
 # ================================
-- stage: Deploy
-  displayName: 'Deploy to VPS'
-  dependsOn: Build
+- stage: InjectReference
+  displayName: 'Inject DLL Reference'
+  dependsOn: Restore
   jobs:
-  - deployment: DeployService
-    displayName: 'Deploy KhulaFxAdmin Service'
-    environment: 'VPS-Production'
-    pool:
-      name: 'Default'
-    strategy:
-      runOnce:
-        deploy:
-          steps:
-          - download: current
-            artifact: KhulaFxAdmin
-
-          - task: PowerShell@2
-            displayName: 'Deploy Service'
-            inputs:
-              targetType: inline
-              script: |
-                $server = "$(vpsServer)"
-                $deployPath = "$(deployPath)"
-                $serviceName = "$(serviceName)"
-                $artifactPath = "$(Pipeline.Workspace)/KhulaFxAdmin"
-
-                Write-Host "Deploying to: $deployPath"
-
-                $secPass = ConvertTo-SecureString "$(DEPLOY_PASSWORD)" -AsPlainText -Force
-                $cred = New-Object PSCredential ("$(deployUser)", $secPass)
-                $session = New-PSSession -ComputerName $server -Credential $cred -Authentication Negotiate
-
-                try {
-                  # Stop service if running
-                  Invoke-Command -Session $session -ScriptBlock {
-                    param($svc)
-                    $service = Get-Service -Name $svc -ErrorAction SilentlyContinue
-                    if ($service -and $service.Status -eq 'Running') {
-                      Stop-Service -Name $svc -Force
-                      Start-Sleep -Seconds 5
-                    }
-                  } -ArgumentList $serviceName
-
-                  # Prepare directory
-                  Invoke-Command -Session $session -ScriptBlock {
-                    param($path)
-                    if (-not (Test-Path $path)) { New-Item -ItemType Directory -Path $path -Force | Out-Null }
-                    Get-ChildItem -Path $path | Where-Object { $_.Name -notmatch 'log|backup' } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-                  } -ArgumentList $deployPath
-
-                  # Copy files
-                  Copy-Item -Path "$artifactPath\*" -Destination $deployPath -ToSession $session -Recurse -Force
-
-                  # Install/start service
-                  Invoke-Command -Session $session -ScriptBlock {
-                    param($svc, $path)
-                    $exe = Get-ChildItem -Path $path -Filter "KhulaFxAdmin.exe" | Select-Object -First 1
-                    if (-not $exe) { throw "Executable not found" }
-
-                    $binaryPath = $exe.FullName
-                    $service = Get-Service -Name $svc -ErrorAction SilentlyContinue
-                    if ($service) {
-                      sc.exe config $svc binPath= "`"$binaryPath`"" start= auto | Out-Null
-                    } else {
-                      New-Service -Name $svc -BinaryPathName $binaryPath -DisplayName "Khula FX Admin" -StartupType Automatic | Out-Null
-                    }
-
-                    Start-Service -Name $svc
-                  } -ArgumentList $serviceName, $deployPath
-
-                } finally {
-                  Remove-PSSession $session
-                }
-
-# ================================
-# NOTIFY STAGE
-# ================================
-- stage: Notify
-  displayName: 'Send Deployment Notification'
-  dependsOn: Deploy
-  condition: always()
-  jobs:
-  - job: SendNotification
+  - job: InjectDLL
+    displayName: 'Add KhulaFxTradeMonitor.dll reference'
     pool:
       name: 'Default'
     steps:
     - task: PowerShell@2
-      displayName: 'Telegram Notification'
+      displayName: 'Inject DLL Reference into KhulaFxAdmin.csproj'
       inputs:
         targetType: inline
         script: |
-          $status = if ("$(Agent.JobStatus)" -eq "Succeeded") { "✅ SUCCESS" } else { "❌ FAILED" }
-          $message = @"
-          *KhulaFxAdmin Deployment*
-          
-          Status: $status
-          Server: $(vpsServer)
-          Path: $(deployPath)
-          Build: $(Build.BuildNumber)
-          "@
+          $projectFile = "$(Build.SourcesDirectory)\KhulaFxAdmin\KhulaFxAdmin.csproj"
+          $dllFolder = "$(Build.SourcesDirectory)\libs"
+          $dllName = "KhulaFxTradeMonitor.dll"
 
-          $url = "https://api.telegram.org/bot$(TELEGRAM_BOT_TOKEN)/sendMessage"
-          $body = @{ chat_id = "$(TELEGRAM_CHAT_ID)"; text = $message; parse_mode = "Markdown" } | ConvertTo-Json
-          try { Invoke-RestMethod -Uri $url -Method Post -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) } catch { Write-Warning "Notification failed" }
+          Write-Host "Injecting DLL reference into $projectFile"
+
+          [xml]$xml = Get-Content $projectFile
+
+          $ns = @{msb='http://schemas.microsoft.com/developer/msbuild/2003'}
+          $projectNode = $xml.Project
+
+          # Check if ItemGroup exists for references
+          $itemGroup = $projectNode.ItemGroup | Where-Object { $_.Reference }
+          if (-not $itemGroup) {
+              $itemGroup = $xml.CreateElement("ItemGroup", $projectNode.NamespaceURI)
+              $projectNode.AppendChild($itemGroup) | Out-Null
+          }
+
+          # Add reference if it doesn't exist
+          $exists = $itemGroup.Reference | Where-Object { $_.Include -eq "KhulaFxTradeMonitor" }
+          if (-not $exists) {
+              $ref = $xml.CreateElement("Reference", $projectNode.NamespaceURI)
+              $ref.SetAttribute("Include", "KhulaFxTradeMonitor")
+              $hintPath = $xml.CreateElement("HintPath", $projectNode.NamespaceURI)
+              $hintPath.InnerText = "$dllFolder\$dllName"
+              $ref.AppendChild($hintPath) | Out-Null
+              $itemGroup.AppendChild($ref) | Out-Null
+              Write-Host "✅ DLL reference injected successfully."
+          } else {
+              Write-Host "DLL reference already exists, skipping injection."
+          }
+
+          $xml.Save($projectFile)
+
+# ================================
+# BUILD
+# ================================
+- stage: Build
+  displayName: 'Build KhulaFxAdmin'
+  dependsOn: InjectReference
+  jobs:
+  - job: BuildJob
+    displayName: 'Build Project'
+    pool:
+      name: 'Default'
+    steps:
+    - task: PowerShell@2
+      displayName: 'Restore NuGet Packages'
+      inputs:
+        targetType: inline
+        script: |
+          dotnet restore "$(Build.SourcesDirectory)\KhulaFxAdmin\KhulaFxAdmin.csproj"
+
+    - task: PowerShell@2
+      displayName: 'Build Project'
+      inputs:
+        targetType: inline
+        script: |
+          dotnet build "$(Build.SourcesDirectory)\KhulaFxAdmin\KhulaFxAdmin.csproj" `
+            -c $(buildConfiguration) `
+            -o "$(Build.ArtifactStagingDirectory)\KhulaFxAdmin"
+
+    - task: PowerShell@2
+      displayName: 'List Build Output'
+      inputs:
+        targetType: inline
+        script: |
+          Get-ChildItem "$(Build.ArtifactStagingDirectory)\KhulaFxAdmin" -Recurse | ForEach-Object { Write-Host $_.FullName }
+
+# ================================
+# PUBLISH ARTIFACTS
+# ================================
+- stage: Publish
+  displayName: 'Publish Artifacts'
+  dependsOn: Build
+  jobs:
+  - job: PublishJob
+    displayName: 'Publish Build Artifacts'
+    pool:
+      name: 'Default'
+    steps:
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish KhulaFxAdmin DLLs'
+      inputs:
+        pathToPublish: '$(Build.ArtifactStagingDirectory)\KhulaFxAdmin'
+        artifactName: 'KhulaFxAdmin'
+        publishLocation: 'Container'
