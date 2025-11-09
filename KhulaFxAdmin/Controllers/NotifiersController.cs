@@ -8,7 +8,7 @@ namespace KhulaFxAdmin.Controllers
 {
     [Authorize]
     [ApiController]
-    [Route("api/[controller]")]
+    [Route("[controller]")]
     public class NotifiersController : ControllerBase
     {
         private readonly NotifierSettingsService _notifierService;

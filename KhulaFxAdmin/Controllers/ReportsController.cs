@@ -6,7 +6,7 @@ namespace KhulaFxAdmin.Controllers
 {
     [Authorize]
     [ApiController]
-    [Route("api/[controller]")]
+    [Route("[controller]")]
     public class ReportsController : ControllerBase
     {
         private readonly ReportService _reportService;
