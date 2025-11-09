@@ -43,14 +43,11 @@ namespace KhulaFxAdmin.Controllers
         {
             try
             {
-                // Verify Google token WITH audience
-                var settings = new GoogleJsonWebSignature.ValidationSettings
+                var payload = await GoogleJsonWebSignature.ValidateAsync(request.Credential, new GoogleJsonWebSignature.ValidationSettings
                 {
-                    Audience = new[] { _googleClientId }
-                };
-                // Verify Google token
-                var payload = await GoogleJsonWebSignature.ValidateAsync(request.Credential);
-              
+                    Audience = new[] { _configuration["Google:ClientId"] }
+                });
+
 
                 if (payload == null)
                 {
