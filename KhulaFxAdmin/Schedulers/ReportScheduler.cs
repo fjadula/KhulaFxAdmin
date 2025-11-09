@@ -13,7 +13,7 @@ namespace KhulaFxAdmin.Schedulers
         private readonly WhatsAppNotifier _whatsAppNotifier;
         public DailyReportJob(
             ReportService reportService,
-            NotifierSettingsService notifierSettings
+            NotifierSettingsService notifierSettings,
          TelegramNotifier telegramNotifier,
          WhatsAppNotifier whatsAppNotifier
         )
@@ -35,7 +35,7 @@ namespace KhulaFxAdmin.Schedulers
                     await _telegramNotifier.SendToPublicChannelAsync(message);
                     Log.Information("Daily report sent to Telegram");
                 }
-                Check if WhatsApp is enabled
+                //Check if WhatsApp is enabled
                  if (await _notifierSettings.IsNotifierEnabledAsync("WhatsApp"))
                     {
                         await _whatsAppNotifier.SendMessageAsync(message);
@@ -57,7 +57,7 @@ namespace KhulaFxAdmin.Schedulers
         private readonly WhatsAppNotifier _whatsAppNotifier;
         public WeeklyReportJob(
             ReportService reportService,
-            NotifierSettingsService notifierSettings
+            NotifierSettingsService notifierSettings,
          TelegramNotifier telegramNotifier,
          WhatsAppNotifier whatsAppNotifier
         )
@@ -73,13 +73,13 @@ namespace KhulaFxAdmin.Schedulers
             {
                 Log.Information("Generating weekly report...");
                 var message = await _reportService.GenerateWeeklyReportMessageAsync();
-                Check if Telegram is enabled
+                //Check if Telegram is enabled
                  if (await _notifierSettings.IsNotifierEnabledAsync("Telegram"))
                     {
                         await _telegramNotifier.SendToPublicChannelAsync(message);
                         Log.Information("Weekly report sent to Telegram");
                     }
-                Check if WhatsApp is enabled
+                //Check if WhatsApp is enabled
                  if (await _notifierSettings.IsNotifierEnabledAsync("WhatsApp"))
                     {
                         await _whatsAppNotifier.SendMessageAsync(message);
