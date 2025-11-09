@@ -15,7 +15,7 @@ namespace KhulaFxAdmin.Controllers
 {
     [EnableCors("AllowFrontend")]
     [ApiController]
-    [Route("api/[controller]")]
+    [Route("[controller]")]
     public class AuthController : ControllerBase
     {
         private readonly IConfiguration _configuration;
