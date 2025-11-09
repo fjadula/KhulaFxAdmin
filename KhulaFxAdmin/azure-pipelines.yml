@@ -1,171 +1,195 @@
-# ========================================================
-# Azure DevOps Pipeline B for KhulaFxAdmin
-# Builds and references KhulaFxTradeMonitor.dll from Pipeline A
-# ========================================================
-
 trigger:
-  branches:
-    include:
-      - master
-      - main
+  - master
+  - main
+
+pool:
+  name: Default
 
 variables:
   - group: Deployment-Secrets
-  - name: buildConfiguration
-    value: 'Release'
-  - name: dotnetVersion
-    value: '8.x'
-  - name: pipelineAProject
-    value: 'KhulaFxTrade'
-  - name: pipelineAName
-    value: 'fjadula.KhulaFxTradeMonitor'
 
 stages:
-# ================================
-# RESTORE AND DOWNLOAD DLL
-# ================================
-- stage: Restore
-  displayName: 'Restore & Download DLL'
-  jobs:
-  - job: RestoreJob
-    displayName: 'Restore NuGet & Download DLL'
-    pool:
-      name: 'Default'
-    steps:
-    - checkout: self
-      fetchDepth: 1
+  - stage: Build
+    jobs:
+      - job: BuildJob
+        steps:
+          - checkout: self
 
-    - task: UseDotNet@2
-      displayName: 'Install .NET SDK 8.x'
-      inputs:
-        packageType: sdk
-        version: $(dotnetVersion)
+          - task: UseDotNet@2
+            displayName: Install .NET 8
+            inputs:
+              version: 8.x
 
-    # -----------------------------
-    # Download DLL artifact from Pipeline A
-    # -----------------------------
-    - task: DownloadPipelineArtifact@2
-      displayName: 'Download KhulaFxTradeMonitor.dll from Pipeline A'
-      inputs:
-        source: 'specific'
-        project: $(pipelineAProject)
-        pipeline: $(pipelineAName)
-        runVersion: 'latest'
-        artifact: 'KhulaFxTradeMonitorDLL'
-        path: '$(Build.SourcesDirectory)\libs'
+          # Step: Inject KhulaFxTradeMonitor.dll dynamically and update csproj
+          - task: PowerShell@2
+            displayName: Inject DLL and Update csproj
+            inputs:
+              targetType: inline
+              script: |
+                $dllSource = "$(Pipeline.Workspace)/libs/KhulaFxTradeMonitor.dll"
+                $projectFile = "$(Pipeline.Workspace)/KhulaFxAdmin/KhulaFxAdmin.csproj"
+                $dllTargetDir = "$(Pipeline.Workspace)/KhulaFxAdmin"
 
-    # -----------------------------
-    # List downloaded files
-    # -----------------------------
-    - task: PowerShell@2
-      displayName: 'List downloaded DLL files'
-      inputs:
-        targetType: inline
-        script: |
-          Write-Host "DLL files in libs folder:"
-          Get-ChildItem "$(Build.SourcesDirectory)\libs" -Recurse | ForEach-Object { Write-Host $_.FullName }
+                Write-Host "Injecting KhulaFxTradeMonitor.dll into KhulaFxAdmin..."
+                
+                if (-Not (Test-Path $dllSource)) {
+                  Write-Error "KhulaFxTradeMonitor.dll not found at $dllSource"
+                  exit 1
+                }
 
-# ================================
-# INJECT DLL REFERENCE
-# ================================
-- stage: InjectReference
-  displayName: 'Inject DLL Reference'
-  dependsOn: Restore
-  jobs:
-  - job: InjectDLL
-    displayName: 'Add KhulaFxTradeMonitor.dll reference'
-    pool:
-      name: 'Default'
-    steps:
-    - task: PowerShell@2
-      displayName: 'Inject DLL Reference into KhulaFxAdmin.csproj'
-      inputs:
-        targetType: inline
-        script: |
-          $projectFile = "$(Build.SourcesDirectory)\KhulaFxAdmin\KhulaFxAdmin.csproj"
-          $dllFolder = "$(Build.SourcesDirectory)\libs"
-          $dllName = "KhulaFxTradeMonitor.dll"
+                # Copy DLL into project folder
+                Copy-Item -Path $dllSource -Destination $dllTargetDir -Force
+                Write-Host "✅ DLL copied successfully"
 
-          Write-Host "Injecting DLL reference into $projectFile"
+                # Load csproj as XML
+                [xml]$csproj = Get-Content $projectFile
 
-          [xml]$xml = Get-Content $projectFile
+                # Check if Reference already exists
+                $ns = @{msb='http://schemas.microsoft.com/developer/msbuild/2003'}
+                $existingRef = $csproj.Project.ItemGroup.Reference | Where-Object { $_.Include -eq "KhulaFxTradeMonitor" }
+                
+                if (-not $existingRef) {
+                  Write-Host "Adding Reference to KhulaFxTradeMonitor.dll in csproj..."
+                  $itemGroup = $csproj.CreateElement("ItemGroup", $csproj.Project.NamespaceURI)
+                  $reference = $csproj.CreateElement("Reference", $csproj.Project.NamespaceURI)
+                  $reference.SetAttribute("Include", "KhulaFxTradeMonitor")
 
-          $ns = @{msb='http://schemas.microsoft.com/developer/msbuild/2003'}
-          $projectNode = $xml.Project
+                  $hintPath = $csproj.CreateElement("HintPath", $csproj.Project.NamespaceURI)
+                  $hintPath.InnerText = "KhulaFxTradeMonitor.dll"
+                  $reference.AppendChild($hintPath) | Out-Null
 
-          # Check if ItemGroup exists for references
-          $itemGroup = $projectNode.ItemGroup | Where-Object { $_.Reference }
-          if (-not $itemGroup) {
-              $itemGroup = $xml.CreateElement("ItemGroup", $projectNode.NamespaceURI)
-              $projectNode.AppendChild($itemGroup) | Out-Null
-          }
+                  $privateNode = $csproj.CreateElement("Private", $csproj.Project.NamespaceURI)
+                  $privateNode.InnerText = "true"
+                  $reference.AppendChild($privateNode) | Out-Null
 
-          # Add reference if it doesn't exist
-          $exists = $itemGroup.Reference | Where-Object { $_.Include -eq "KhulaFxTradeMonitor" }
-          if (-not $exists) {
-              $ref = $xml.CreateElement("Reference", $projectNode.NamespaceURI)
-              $ref.SetAttribute("Include", "KhulaFxTradeMonitor")
-              $hintPath = $xml.CreateElement("HintPath", $projectNode.NamespaceURI)
-              $hintPath.InnerText = "$dllFolder\$dllName"
-              $ref.AppendChild($hintPath) | Out-Null
-              $itemGroup.AppendChild($ref) | Out-Null
-              Write-Host "✅ DLL reference injected successfully."
-          } else {
-              Write-Host "DLL reference already exists, skipping injection."
-          }
+                  $itemGroup.AppendChild($reference) | Out-Null
+                  $csproj.Project.AppendChild($itemGroup) | Out-Null
 
-          $xml.Save($projectFile)
+                  # Save the updated csproj
+                  $csproj.Save($projectFile)
+                  Write-Host "✅ csproj updated successfully"
+                } else {
+                  Write-Host "Reference already exists in csproj, skipping..."
+                }
 
-# ================================
-# BUILD
-# ================================
-- stage: Build
-  displayName: 'Build KhulaFxAdmin'
-  dependsOn: InjectReference
-  jobs:
-  - job: BuildJob
-    displayName: 'Build Project'
-    pool:
-      name: 'Default'
-    steps:
-    - task: PowerShell@2
-      displayName: 'Restore NuGet Packages'
-      inputs:
-        targetType: inline
-        script: |
-          dotnet restore "$(Build.SourcesDirectory)\KhulaFxAdmin\KhulaFxAdmin.csproj"
+          - task: DotNetCoreCLI@2
+            displayName: Build Release
+            inputs:
+              command: build
+              projects: KhulaFxAdmin/KhulaFxAdmin.csproj
+              arguments: --configuration Release
 
-    - task: PowerShell@2
-      displayName: 'Build Project'
-      inputs:
-        targetType: inline
-        script: |
-          dotnet build "$(Build.SourcesDirectory)\KhulaFxAdmin\KhulaFxAdmin.csproj" `
-            -c $(buildConfiguration) `
-            -o "$(Build.ArtifactStagingDirectory)\KhulaFxAdmin"
+          - task: DotNetCoreCLI@2
+            displayName: Publish Release
+            inputs:
+              command: publish
+              projects: KhulaFxAdmin/KhulaFxAdmin.csproj
+              arguments: --configuration Release --output $(Build.ArtifactStagingDirectory) -p:PublishSingleFile=false
 
-    - task: PowerShell@2
-      displayName: 'List Build Output'
-      inputs:
-        targetType: inline
-        script: |
-          Get-ChildItem "$(Build.ArtifactStagingDirectory)\KhulaFxAdmin" -Recurse | ForEach-Object { Write-Host $_.FullName }
+          - task: PublishBuildArtifacts@1
+            displayName: Publish Artifacts
+            inputs:
+              pathToPublish: $(Build.ArtifactStagingDirectory)
+              artifactName: backend
 
-# ================================
-# PUBLISH ARTIFACTS
-# ================================
-- stage: Publish
-  displayName: 'Publish Artifacts'
-  dependsOn: Build
-  jobs:
-  - job: PublishJob
-    displayName: 'Publish Build Artifacts'
-    pool:
-      name: 'Default'
-    steps:
-    - task: PublishBuildArtifacts@1
-      displayName: 'Publish KhulaFxAdmin DLLs'
-      inputs:
-        pathToPublish: '$(Build.ArtifactStagingDirectory)\KhulaFxAdmin'
-        artifactName: 'KhulaFxAdmin'
-        publishLocation: 'Container'
+  - stage: Deploy
+    displayName: Deploy to VPS
+    dependsOn: Build
+    jobs:
+      - job: DeployJob
+        displayName: Deploy Backend
+        steps:
+          - download: current
+            artifact: backend
+
+          - task: PowerShell@2
+            displayName: Deploy to IIS
+            inputs:
+              targetType: inline
+              script: |
+                $src = "$(Pipeline.Workspace)/backend"
+                $vps = "$(vpsServer)"
+                $dst = "\\$vps\c$\inetpub\wwwroot\khulafx.com\api"
+                $username = "$(deployUser)"
+                $password = "$(DEPLOY_PASSWORD)"
+                
+                Write-Host "========================================" -ForegroundColor Cyan
+                Write-Host "Deploying Backend" -ForegroundColor Cyan
+                Write-Host "========================================" -ForegroundColor Cyan
+                Write-Host "Source: $src" -ForegroundColor White
+                Write-Host "VPS: $vps" -ForegroundColor White
+                Write-Host "Destination: $dst" -ForegroundColor White
+                Write-Host ""
+                
+                Write-Host "Step 1: Clearing existing connections..." -ForegroundColor Yellow
+                net use * /delete /y 2>&1 | Out-Null
+                Start-Sleep -Seconds 2
+                Write-Host "✅ Connections cleared" -ForegroundColor Green
+                
+                Write-Host "`nStep 2: Stopping IIS..." -ForegroundColor Yellow
+                try {
+                  $secPassword = ConvertTo-SecureString $password -AsPlainText -Force
+                  $cred = New-Object System.Management.Automation.PSCredential("$vps\$username", $secPassword)
+                  $session = New-PSSession -ComputerName $vps -Credential $cred -ErrorAction Stop
+                  Invoke-Command -Session $session -ScriptBlock { net stop W3SVC; Start-Sleep -Seconds 5 }
+                  Remove-PSSession $session
+                  Write-Host "✅ IIS stopped" -ForegroundColor Green
+                } catch {
+                  Write-Host "⚠️ IIS stop failed, continuing..." -ForegroundColor Yellow
+                }
+                
+                Write-Host "`nStep 3: Waiting for file locks..." -ForegroundColor Yellow
+                Start-Sleep -Seconds 5
+                
+                Write-Host "`nStep 4: Authenticating..." -ForegroundColor Yellow
+                net use "\\$vps\c$" /user:"$vps\$username" "$password" /persistent:no
+                if ($LASTEXITCODE -eq 0) {
+                  Write-Host "✅ Authenticated" -ForegroundColor Green
+                } else {
+                  Write-Host "❌ Authentication failed" -ForegroundColor Red
+                  exit 1
+                }
+                
+                Write-Host "`nStep 5: Clearing old files..." -ForegroundColor Yellow
+                Get-ChildItem -Path $dst -Force -ErrorAction Continue | Where-Object { $_.Name -ne "web.config" } | ForEach-Object {
+                  Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                }
+                Write-Host "✅ Old files cleared" -ForegroundColor Green
+                
+                Write-Host "`nStep 6: Copying new files..." -ForegroundColor Yellow
+                Get-ChildItem -Path $src -Force | ForEach-Object {
+                  Copy-Item -Path $_.FullName -Destination $dst -Recurse -Force -ErrorAction SilentlyContinue
+                  Write-Host "  ✅ Copied: $($_.Name)" -ForegroundColor Green
+                }
+                Write-Host "✅ Files copied" -ForegroundColor Green
+                
+                Write-Host "`nStep 7: Extracting ZIP if present..." -ForegroundColor Yellow
+                $zipFile = "$dst\KhulaFxAdmin.zip"
+                if (Test-Path $zipFile) {
+                  Write-Host "Found ZIP file, extracting..." -ForegroundColor Cyan
+                  Expand-Archive -Path $zipFile -DestinationPath $dst -Force
+                  Remove-Item -Path $zipFile -Force
+                  Write-Host "✅ ZIP extracted and removed" -ForegroundColor Green
+                } else {
+                  Write-Host "ℹ️ No ZIP file found" -ForegroundColor Cyan
+                }
+                
+                Write-Host "`nStep 8: Starting IIS..." -ForegroundColor Yellow
+                try {
+                  $secPassword = ConvertTo-SecureString $password -AsPlainText -Force
+                  $cred = New-Object System.Management.Automation.PSCredential("$vps\$username", $secPassword)
+                  $session = New-PSSession -ComputerName $vps -Credential $cred -ErrorAction Stop
+                  Invoke-Command -Session $session -ScriptBlock { net start W3SVC; Start-Sleep -Seconds 3 }
+                  Remove-PSSession $session
+                  Write-Host "✅ IIS started" -ForegroundColor Green
+                } catch {
+                  Write-Host "⚠️ IIS start failed: $_" -ForegroundColor Yellow
+                }
+                
+                Write-Host ""
+                Write-Host "========================================" -ForegroundColor Green
+                Write-Host "✅ Deployment Complete!" -ForegroundColor Green
+                Write-Host "========================================" -ForegroundColor Green
+                Write-Host "API: https://khulafx.com/api" -ForegroundColor Cyan
+                
+                exit 0
