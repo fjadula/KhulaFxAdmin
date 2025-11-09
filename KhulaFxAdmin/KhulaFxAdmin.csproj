@@ -22,8 +22,10 @@
   </ItemGroup>
 
 	<ItemGroup>
+		<!-- Reference KhulaFxTradeMonitor DLL -->
 		<Reference Include="KhulaFxTradeMonitor">
-			<HintPath>..\KhulaFxTradeMonitor\KhulaFxTradeMonitor\bin\Debug\net8.0\KhulaFxTradeMonitor.dll</HintPath>
+			<HintPath>Libs\KhulaFxTradeMonitor.dll</HintPath>
+			<Private>true</Private>
 		</Reference>
 	</ItemGroup>
 

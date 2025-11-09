@@ -1,178 +1,444 @@
+# ========================================================
+# Azure DevOps Pipeline for KhulaFxAdmin (Pipeline B)
+# Depends on KhulaFxTradeMonitor DLL from Pipeline A
+# ========================================================
+
 trigger:
-  - master
-  - main
+  branches:
+    include:
+      - master
+      - main
+  paths:
+    include:
+      - KhulaFxAdmin/**
 
 pool:
-  name: Default
+  name: 'Default'
 
 variables:
   - group: Deployment-Secrets
+  - name: buildConfiguration
+    value: 'Release'
+  - name: dotnetVersion
+    value: '8.x'
   - name: vpsServer
     value: '108.181.161.170'
-  - name: deployUser
-    value: 'YourDeployUser'
+  - name: apiDeployPath
+    value: 'C:\inetpub\wwwroot\khulafx.com\api'
 
 stages:
   # ================================
   # BUILD STAGE
   # ================================
   - stage: Build
-    displayName: Build KhulaFxAdmin
+    displayName: 'Build KhulaFxAdmin'
     jobs:
       - job: BuildJob
-        displayName: Build Job
+        displayName: 'Build Backend API'
         steps:
           - checkout: self
+            fetchDepth: 1
+            displayName: 'Checkout Repository'
 
           # -----------------------------
-          # Download Pipeline A artifact
+          # Create Libs Directory
+          # -----------------------------
+          - task: PowerShell@2
+            displayName: 'Create Libs Directory'
+            inputs:
+              targetType: inline
+              script: |
+                $libsDir = "$(Build.SourcesDirectory)/KhulaFxAdmin/Libs"
+                if (!(Test-Path $libsDir)) {
+                    New-Item -ItemType Directory -Path $libsDir -Force | Out-Null
+                    Write-Host "✅ Created Libs directory: $libsDir"
+                } else {
+                    Write-Host "✅ Libs directory already exists"
+                }
+
+          # -----------------------------
+          # Download KhulaFxTradeMonitor DLL
           # -----------------------------
           - task: DownloadPipelineArtifact@2
-            displayName: 'Download KhulaFxTradeMonitor DLL from Pipeline A'
+            displayName: 'Download KhulaFxTradeMonitor DLL'
             inputs:
               source: 'specific'
-              project: 'KhulaFxTrade'                           # Your project name
-              pipeline: 'fjadula.KhulaFxTradeMonitor'          # Pipeline A name
-              runVersion: 'latest'
+              project: '$(System.TeamProjectId)'
+              pipeline: 'fjadula.KhulaFxTradeMonitor'  # Update if different
+              runVersion: 'latestFromBranch'
+              runBranch: 'refs/heads/master'
               artifact: 'KhulaFxTradeMonitorDLL'
               targetPath: '$(Pipeline.Workspace)/KhulaFxTradeMonitorDLL'
 
+          # -----------------------------
+          # Copy DLL to Libs folder
+          # -----------------------------
           - task: PowerShell@2
-            displayName: 'Copy DLL to KhulaFxAdmin\Libs'
+            displayName: 'Copy DLL to Libs Folder'
             inputs:
               targetType: inline
               script: |
                 $sourceDll = "$(Pipeline.Workspace)/KhulaFxTradeMonitorDLL/KhulaFxTradeMonitor.dll"
                 $targetDir = "$(Build.SourcesDirectory)/KhulaFxAdmin/Libs"
-                if (!(Test-Path $targetDir)) {
-                    New-Item -ItemType Directory -Path $targetDir | Out-Null
+                
+                Write-Host "Source DLL: $sourceDll"
+                Write-Host "Target Directory: $targetDir"
+                
+                if (Test-Path $sourceDll) {
+                    Copy-Item -Path $sourceDll -Destination $targetDir -Force
+                    Write-Host "✅ Copied KhulaFxTradeMonitor.dll to Libs folder"
+                    
+                    # Verify copy
+                    $copiedDll = Join-Path $targetDir "KhulaFxTradeMonitor.dll"
+                    if (Test-Path $copiedDll) {
+                        $fileInfo = Get-Item $copiedDll
+                        Write-Host "✅ DLL verified: Size = $([math]::Round($fileInfo.Length / 1KB, 2)) KB"
+                    } else {
+                        Write-Error "❌ DLL not found after copy"
+                        exit 1
+                    }
+                } else {
+                    Write-Error "❌ Source DLL not found: $sourceDll"
+                    Get-ChildItem "$(Pipeline.Workspace)/KhulaFxTradeMonitorDLL" -Recurse
+                    exit 1
                 }
-                Copy-Item -Path $sourceDll -Destination $targetDir -Force
-                Write-Host "Copied KhulaFxTradeMonitor.dll to KhulaFxAdmin\Libs"
 
           # -----------------------------
-          # Install .NET
+          # Install .NET SDK
           # -----------------------------
           - task: UseDotNet@2
-            displayName: Install .NET 8
+            displayName: 'Install .NET SDK 8.x'
             inputs:
               packageType: sdk
-              version: 8.x
+              version: $(dotnetVersion)
 
           # -----------------------------
-          # Build KhulaFxAdmin
+          # Restore NuGet Packages
           # -----------------------------
           - task: DotNetCoreCLI@2
-            displayName: Build Release
+            displayName: 'Restore NuGet Packages'
             inputs:
-              command: build
-              projects: KhulaFxAdmin/KhulaFxAdmin.csproj
-              arguments: --configuration Release
+              command: 'restore'
+              projects: 'KhulaFxAdmin/KhulaFxAdmin.csproj'
+              feedsToUse: 'select'
 
           # -----------------------------
-          # Publish KhulaFxAdmin
+          # Build Project
           # -----------------------------
           - task: DotNetCoreCLI@2
-            displayName: Publish Release
+            displayName: 'Build KhulaFxAdmin'
             inputs:
-              command: publish
-              projects: KhulaFxAdmin/KhulaFxAdmin.csproj
+              command: 'build'
+              projects: 'KhulaFxAdmin/KhulaFxAdmin.csproj'
+              arguments: '--configuration $(buildConfiguration) --no-restore'
+
+          # -----------------------------
+          # Publish Project
+          # -----------------------------
+          - task: DotNetCoreCLI@2
+            displayName: 'Publish KhulaFxAdmin'
+            inputs:
+              command: 'publish'
+              publishWebProjects: false
+              projects: 'KhulaFxAdmin/KhulaFxAdmin.csproj'
               arguments: >
-                --configuration Release
-                --output $(Build.ArtifactStagingDirectory)
-                -p:PublishSingleFile=false
+                --configuration $(buildConfiguration)
+                --output $(Build.ArtifactStagingDirectory)/backend
+                --no-restore
+                /p:PublishSingleFile=false
+              zipAfterPublish: false
+
+          # -----------------------------
+          # Verify Build Output
+          # -----------------------------
+          - task: PowerShell@2
+            displayName: 'Verify Build Output'
+            inputs:
+              targetType: inline
+              script: |
+                $outputPath = "$(Build.ArtifactStagingDirectory)/backend"
+                Write-Host "Checking build output at: $outputPath"
+                
+                # Check for main DLL
+                $mainDll = Get-ChildItem -Path $outputPath -Filter "KhulaFxAdmin.dll" -Recurse | Select-Object -First 1
+                if ($mainDll) {
+                    Write-Host "✅ KhulaFxAdmin.dll found" -ForegroundColor Green
+                } else {
+                    Write-Error "❌ KhulaFxAdmin.dll not found"
+                    exit 1
+                }
+                
+                # Check for referenced DLL
+                $refDll = Get-ChildItem -Path $outputPath -Filter "KhulaFxTradeMonitor.dll" -Recurse | Select-Object -First 1
+                if ($refDll) {
+                    Write-Host "✅ KhulaFxTradeMonitor.dll included in output" -ForegroundColor Green
+                } else {
+                    Write-Warning "⚠️ KhulaFxTradeMonitor.dll not found in output (may cause runtime errors)"
+                }
+                
+                # List all files
+                Write-Host "`nPublished files:"
+                Get-ChildItem -Path $outputPath -File | Select-Object Name, @{N='Size(KB)';E={[math]::Round($_.Length/1KB,2)}} | Format-Table
 
           # -----------------------------
           # Publish Artifacts
           # -----------------------------
           - task: PublishBuildArtifacts@1
-            displayName: Publish KhulaFxAdmin Artifacts
+            displayName: 'Publish Build Artifacts'
             inputs:
-              pathToPublish: $(Build.ArtifactStagingDirectory)
-              artifactName: backend
+              pathToPublish: '$(Build.ArtifactStagingDirectory)/backend'
+              artifactName: 'backend'
+              publishLocation: 'Container'
 
   # ================================
   # DEPLOY STAGE
   # ================================
   - stage: Deploy
-    displayName: Deploy to VPS
+    displayName: 'Deploy to VPS IIS'
     dependsOn: Build
+    condition: succeeded()
     jobs:
-      - job: DeployJob
-        displayName: Deploy Backend
-        steps:
-          - download: current
-            artifact: backend
+      - deployment: DeployAPI
+        displayName: 'Deploy to IIS'
+        environment: 'VPS-Production'
+        pool:
+          name: 'Default'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: backend
+                  displayName: 'Download Build Artifacts'
 
+                - task: PowerShell@2
+                  displayName: 'Test Authentication'
+                  inputs:
+                    targetType: inline
+                    script: |
+                      $server = "$(vpsServer)"
+                      $usernameVariants = @(".\$(deployUser)", "$(deployUser)", "$server\$(deployUser)")
+                      $authMethods = @("Negotiate", "Default")
+                      $found = $false
+
+                      foreach ($auth in $authMethods) {
+                        foreach ($user in $usernameVariants) {
+                          Write-Host "Trying $auth as $user..."
+                          try {
+                            $secPass = ConvertTo-SecureString "$(DEPLOY_PASSWORD)" -AsPlainText -Force
+                            $cred = New-Object PSCredential ($user, $secPass)
+                            $s = New-PSSession -ComputerName $server -Authentication $auth -Credential $cred -ErrorAction Stop
+                            Write-Host "✅ Success with $auth as $user"
+                            Write-Host "##vso[task.setvariable variable=SuccessfulUserName;isOutput=true]$user"
+                            Write-Host "##vso[task.setvariable variable=SuccessfulAuth;isOutput=true]$auth"
+                            Remove-PSSession $s
+                            $found = $true
+                            break
+                          } catch {
+                            Write-Host "❌ Failed"
+                          }
+                        }
+                        if ($found) { break }
+                      }
+
+                      if (-not $found) {
+                        Write-Error "Authentication failed"
+                        exit 1
+                      }
+                  name: AuthTest
+
+                - task: PowerShell@2
+                  displayName: 'Deploy to IIS'
+                  inputs:
+                    targetType: inline
+                    script: |
+                      $server = "$(vpsServer)"
+                      $deployPath = "$(apiDeployPath)"
+                      $artifactPath = "$(Pipeline.Workspace)/backend"
+                      
+                      Write-Host "========================================" -ForegroundColor Cyan
+                      Write-Host "Deploying KhulaFxAdmin to IIS" -ForegroundColor Cyan
+                      Write-Host "========================================" -ForegroundColor Cyan
+                      Write-Host "Server: $server"
+                      Write-Host "Deploy Path: $deployPath"
+                      Write-Host "Artifact Path: $artifactPath"
+                      
+                      $secPass = ConvertTo-SecureString "$(DEPLOY_PASSWORD)" -AsPlainText -Force
+                      $cred = New-Object PSCredential ("$(AuthTest.SuccessfulUserName)", $secPass)
+                      $session = New-PSSession -ComputerName $server -Credential $cred -Authentication $(AuthTest.SuccessfulAuth)
+                      
+                      try {
+                        # Stop IIS App Pool
+                        Write-Host "`n[1/5] Stopping IIS Application Pool..." -ForegroundColor Yellow
+                        Invoke-Command -Session $session -ScriptBlock {
+                          param($path)
+                          
+                          # Find app pool name from web.config or use default
+                          $appPoolName = "KhulaFXAppPool"  # Update if different
+                          
+                          Import-Module WebAdministration -ErrorAction SilentlyContinue
+                          
+                          try {
+                            $pool = Get-Item "IIS:\AppPools\$appPoolName" -ErrorAction SilentlyContinue
+                            if ($pool) {
+                              if ($pool.State -eq 'Started') {
+                                Stop-WebAppPool -Name $appPoolName -ErrorAction Stop
+                                Write-Host "   App pool stopped: $appPoolName"
+                                Start-Sleep -Seconds 3
+                              } else {
+                                Write-Host "   App pool already stopped"
+                              }
+                            } else {
+                              Write-Host "   App pool not found, will continue"
+                            }
+                          } catch {
+                            Write-Warning "   Could not stop app pool: $_"
+                          }
+                        } -ArgumentList $deployPath
+                        
+                        # Backup web.config
+                        Write-Host "`n[2/5] Backing up web.config..." -ForegroundColor Yellow
+                        Invoke-Command -Session $session -ScriptBlock {
+                          param($path)
+                          
+                          $webConfig = Join-Path $path "web.config"
+                          if (Test-Path $webConfig) {
+                            $backupConfig = Join-Path $path "web.config.backup"
+                            Copy-Item -Path $webConfig -Destination $backupConfig -Force
+                            Write-Host "   ✅ web.config backed up"
+                          } else {
+                            Write-Host "   No web.config found (first deployment)"
+                          }
+                        } -ArgumentList $deployPath
+                        
+                        # Clear old files except web.config and backups
+                        Write-Host "`n[3/5] Clearing old files..." -ForegroundColor Yellow
+                        Invoke-Command -Session $session -ScriptBlock {
+                          param($path)
+                          
+                          if (Test-Path $path) {
+                            Get-ChildItem -Path $path -Force | 
+                              Where-Object { $_.Name -notmatch '^web\.config' -and $_.Name -notmatch 'backup' } | 
+                              ForEach-Object {
+                                try {
+                                  Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction Stop
+                                } catch {
+                                  Write-Warning "   Could not delete: $($_.Name)"
+                                }
+                              }
+                            Write-Host "   ✅ Old files cleared"
+                          } else {
+                            New-Item -ItemType Directory -Path $path -Force | Out-Null
+                            Write-Host "   ✅ Created directory: $path"
+                          }
+                        } -ArgumentList $deployPath
+                        
+                        # Copy new files
+                        Write-Host "`n[4/5] Copying new files..." -ForegroundColor Yellow
+                        Copy-Item -Path "$artifactPath\*" -Destination $deployPath -ToSession $session -Recurse -Force
+                        Write-Host "   ✅ Files copied successfully"
+                        
+                        # Restore web.config if it was backed up
+                        Invoke-Command -Session $session -ScriptBlock {
+                          param($path)
+                          
+                          $backupConfig = Join-Path $path "web.config.backup"
+                          $webConfig = Join-Path $path "web.config"
+                          
+                          if ((Test-Path $backupConfig) -and -not (Test-Path $webConfig)) {
+                            Copy-Item -Path $backupConfig -Destination $webConfig -Force
+                            Write-Host "   ✅ web.config restored from backup"
+                          }
+                        } -ArgumentList $deployPath
+                        
+                        # Start IIS App Pool
+                        Write-Host "`n[5/5] Starting IIS Application Pool..." -ForegroundColor Yellow
+                        Invoke-Command -Session $session -ScriptBlock {
+                          param($path)
+                          
+                          $appPoolName = "KhulaFXAppPool"  # Update if different
+                          
+                          Import-Module WebAdministration -ErrorAction SilentlyContinue
+                          
+                          try {
+                            $pool = Get-Item "IIS:\AppPools\$appPoolName" -ErrorAction SilentlyContinue
+                            if ($pool) {
+                              Start-WebAppPool -Name $appPoolName -ErrorAction Stop
+                              Write-Host "   ✅ App pool started: $appPoolName"
+                              Start-Sleep -Seconds 2
+                              
+                              # Verify
+                              $pool = Get-Item "IIS:\AppPools\$appPoolName"
+                              Write-Host "   Status: $($pool.State)"
+                            } else {
+                              Write-Warning "   App pool not found: $appPoolName"
+                            }
+                          } catch {
+                            Write-Warning "   Could not start app pool: $_"
+                          }
+                        } -ArgumentList $deployPath
+                        
+                        # Verify deployment
+                        $fileCount = Invoke-Command -Session $session -ScriptBlock {
+                          param($path)
+                          (Get-ChildItem -Path $path -File -Recurse).Count
+                        } -ArgumentList $deployPath
+                        
+                        Write-Host ""
+                        Write-Host "========================================" -ForegroundColor Green
+                        Write-Host "✅ Deployment Completed Successfully!" -ForegroundColor Green
+                        Write-Host "========================================" -ForegroundColor Green
+                        Write-Host "Files deployed: $fileCount" -ForegroundColor Cyan
+                        Write-Host "API URL: https://khulafx.com/api" -ForegroundColor Cyan
+                        
+                      } catch {
+                        Write-Error "❌ Deployment failed: $_"
+                        Write-Host "Stack trace: $($_.ScriptStackTrace)"
+                        exit 1
+                      } finally {
+                        if ($session) {
+                          Remove-PSSession -Session $session
+                          Write-Host "`n✅ PowerShell session closed" -ForegroundColor Green
+                        }
+                      }
+
+  # ================================
+  # NOTIFY STAGE
+  # ================================
+  - stage: Notify
+    displayName: 'Send Notification'
+    dependsOn: Deploy
+    condition: always()
+    jobs:
+      - job: SendNotification
+        pool:
+          name: 'Default'
+        steps:
           - task: PowerShell@2
-            displayName: Deploy to IIS
+            displayName: 'Telegram Notification'
+            continueOnError: true
             inputs:
               targetType: inline
               script: |
-                $src = "$(Pipeline.Workspace)/backend"
-                $vps = "$(vpsServer)"
-                $dst = "\\$vps\c$\inetpub\wwwroot\khulafx.com\api"
-                $username = "$(deployUser)"
-                $password = "$(DEPLOY_PASSWORD)"
-
-                Write-Host "========================================"
-                Write-Host "Deploying Backend..."
-                Write-Host "========================================"
-
-                # Clear existing connections
-                net use * /delete /y 2>&1 | Out-Null
-                Start-Sleep -Seconds 2
-
-                # Authenticate
-                net use "\\$vps\c$" /user:"$vps\$username" "$password" /persistent:no
-                if ($LASTEXITCODE -ne 0) {
-                    Write-Host "❌ Authentication failed"
-                    exit 1
-                }
-                Write-Host "✅ Authenticated"
-
-                # Stop IIS
+                $status = if ("$(Agent.JobStatus)" -eq "Succeeded") { "✅ SUCCESS" } else { "❌ FAILED" }
+                $message = @"
+                *KhulaFxAdmin Deployment*
+                
+                Status: $status
+                Server: $(vpsServer)
+                Path: $(apiDeployPath)
+                Build: $(Build.BuildNumber)
+                API: https://khulafx.com/api
+                
+                [View Logs]($(System.TeamFoundationCollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId))
+                "@
+                
+                $url = "https://api.telegram.org/bot$(TELEGRAM_BOT_TOKEN)/sendMessage"
+                $body = @{ chat_id = "$(TELEGRAM_CHAT_ID)"; text = $message; parse_mode = "Markdown" } | ConvertTo-Json
+                
                 try {
-                  $secPassword = ConvertTo-SecureString $password -AsPlainText -Force
-                  $cred = New-Object System.Management.Automation.PSCredential("$vps\$username", $secPassword)
-                  $session = New-PSSession -ComputerName $vps -Credential $cred -ErrorAction Stop
-                  Invoke-Command -Session $session -ScriptBlock { net stop W3SVC; Start-Sleep -Seconds 5 }
-                  Remove-PSSession $session
-                  Write-Host "✅ IIS stopped"
+                  Invoke-RestMethod -Uri $url -Method Post -ContentType "application/json; charset=utf-8" -Body ([System.Text.Encoding]::UTF8.GetBytes($body))
+                  Write-Host "✅ Notification sent"
                 } catch {
-                  Write-Host "⚠️ IIS stop failed, continuing..."
+                  Write-Warning "Notification failed: $_"
                 }
-
-                # Clear old files except web.config
-                Get-ChildItem -Path $dst -Force -ErrorAction Continue | Where-Object { $_.Name -ne "web.config" } | ForEach-Object { Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
-
-                # Copy new files
-                Get-ChildItem -Path $src -Force | ForEach-Object {
-                  Copy-Item -Path $_.FullName -Destination $dst -Recurse -Force -ErrorAction SilentlyContinue
-                  Write-Host "Copied: $($_.Name)"
-                }
-
-                # Extract ZIP if present
-                $zipFile = "$dst\KhulaFxAdmin.zip"
-                if (Test-Path $zipFile) {
-                    Write-Host "Found ZIP, extracting..."
-                    Expand-Archive -Path $zipFile -DestinationPath $dst -Force
-                    Remove-Item -Path $zipFile -Force
-                    Write-Host "✅ ZIP extracted and removed"
-                }
-
-                # Start IIS
-                try {
-                  $secPassword = ConvertTo-SecureString $password -AsPlainText -Force
-                  $cred = New-Object System.Management.Automation.PSCredential("$vps\$username", $secPassword)
-                  $session = New-PSSession -ComputerName $vps -Credential $cred -ErrorAction Stop
-                  Invoke-Command -Session $session -ScriptBlock { net start W3SVC; Start-Sleep -Seconds 3 }
-                  Remove-PSSession $session
-                  Write-Host "✅ IIS started"
-                } catch {
-                  Write-Host "⚠️ IIS start failed: $_"
-                }
-
-                Write-Host "========================================"
-                Write-Host "Deployment Complete!"
-                Write-Host "API: https://khulafx.com/api"
