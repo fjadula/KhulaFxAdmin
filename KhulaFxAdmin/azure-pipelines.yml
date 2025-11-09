@@ -7,32 +7,61 @@ pool:
 
 variables:
   - group: Deployment-Secrets
+  - name: vpsServer
+    value: '108.181.161.170'
+  - name: deployUser
+    value: 'YourDeployUser'
 
 stages:
+  # ================================
+  # BUILD STAGE
+  # ================================
   - stage: Build
+    displayName: Build KhulaFxAdmin
     jobs:
       - job: BuildJob
+        displayName: Build Job
         steps:
           - checkout: self
 
+          # -----------------------------
+          # Download Pipeline A artifact
+          # -----------------------------
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download KhulaFxTradeMonitor DLL from Pipeline A'
+            inputs:
+              source: 'specific'
+              project: 'KhulaFxTrade'                           # Your project name
+              pipeline: 'fjadula.KhulaFxTradeMonitor'          # Pipeline A name
+              runVersion: 'latest'
+              artifact: 'KhulaFxTradeMonitorDLL'
+              targetPath: '$(Pipeline.Workspace)/KhulaFxTradeMonitorDLL'
+
+          - task: PowerShell@2
+            displayName: 'Copy DLL to KhulaFxAdmin\Libs'
+            inputs:
+              targetType: inline
+              script: |
+                $sourceDll = "$(Pipeline.Workspace)/KhulaFxTradeMonitorDLL/KhulaFxTradeMonitor.dll"
+                $targetDir = "$(Build.SourcesDirectory)/KhulaFxAdmin/Libs"
+                if (!(Test-Path $targetDir)) {
+                    New-Item -ItemType Directory -Path $targetDir | Out-Null
+                }
+                Copy-Item -Path $sourceDll -Destination $targetDir -Force
+                Write-Host "Copied KhulaFxTradeMonitor.dll to KhulaFxAdmin\Libs"
+
+          # -----------------------------
+          # Install .NET
+          # -----------------------------
           - task: UseDotNet@2
             displayName: Install .NET 8
             inputs:
+              packageType: sdk
               version: 8.x
 
-          # ================================
-          # Download KhulaFxTradeMonitor DLL
-          # ================================
-          - task: DownloadPipelineArtifact@2
-            displayName: 'Download KhulaFxTradeMonitor DLL'
-            inputs:
-              source: 'specific'
-              project: '$(System.TeamProject)'
-              pipeline: <PipelineA_ID>   # <-- Replace with Pipeline A ID
-              buildType: 'latest'
-              artifact: 'KhulaFxTradeMonitorDLL'
-              targetPath: '$(Build.SourcesDirectory)/KhulaFxAdmin/Libs'
-
+          # -----------------------------
+          # Build KhulaFxAdmin
+          # -----------------------------
           - task: DotNetCoreCLI@2
             displayName: Build Release
             inputs:
@@ -40,15 +69,110 @@ stages:
               projects: KhulaFxAdmin/KhulaFxAdmin.csproj
               arguments: --configuration Release
 
+          # -----------------------------
+          # Publish KhulaFxAdmin
+          # -----------------------------
           - task: DotNetCoreCLI@2
             displayName: Publish Release
             inputs:
               command: publish
               projects: KhulaFxAdmin/KhulaFxAdmin.csproj
-              arguments: --configuration Release --output $(Build.ArtifactStagingDirectory) -p:PublishSingleFile=false
+              arguments: >
+                --configuration Release
+                --output $(Build.ArtifactStagingDirectory)
+                -p:PublishSingleFile=false
 
+          # -----------------------------
+          # Publish Artifacts
+          # -----------------------------
           - task: PublishBuildArtifacts@1
-            displayName: Publish Artifacts
+            displayName: Publish KhulaFxAdmin Artifacts
             inputs:
               pathToPublish: $(Build.ArtifactStagingDirectory)
               artifactName: backend
+
+  # ================================
+  # DEPLOY STAGE
+  # ================================
+  - stage: Deploy
+    displayName: Deploy to VPS
+    dependsOn: Build
+    jobs:
+      - job: DeployJob
+        displayName: Deploy Backend
+        steps:
+          - download: current
+            artifact: backend
+
+          - task: PowerShell@2
+            displayName: Deploy to IIS
+            inputs:
+              targetType: inline
+              script: |
+                $src = "$(Pipeline.Workspace)/backend"
+                $vps = "$(vpsServer)"
+                $dst = "\\$vps\c$\inetpub\wwwroot\khulafx.com\api"
+                $username = "$(deployUser)"
+                $password = "$(DEPLOY_PASSWORD)"
+
+                Write-Host "========================================"
+                Write-Host "Deploying Backend..."
+                Write-Host "========================================"
+
+                # Clear existing connections
+                net use * /delete /y 2>&1 | Out-Null
+                Start-Sleep -Seconds 2
+
+                # Authenticate
+                net use "\\$vps\c$" /user:"$vps\$username" "$password" /persistent:no
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "❌ Authentication failed"
+                    exit 1
+                }
+                Write-Host "✅ Authenticated"
+
+                # Stop IIS
+                try {
+                  $secPassword = ConvertTo-SecureString $password -AsPlainText -Force
+                  $cred = New-Object System.Management.Automation.PSCredential("$vps\$username", $secPassword)
+                  $session = New-PSSession -ComputerName $vps -Credential $cred -ErrorAction Stop
+                  Invoke-Command -Session $session -ScriptBlock { net stop W3SVC; Start-Sleep -Seconds 5 }
+                  Remove-PSSession $session
+                  Write-Host "✅ IIS stopped"
+                } catch {
+                  Write-Host "⚠️ IIS stop failed, continuing..."
+                }
+
+                # Clear old files except web.config
+                Get-ChildItem -Path $dst -Force -ErrorAction Continue | Where-Object { $_.Name -ne "web.config" } | ForEach-Object { Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+
+                # Copy new files
+                Get-ChildItem -Path $src -Force | ForEach-Object {
+                  Copy-Item -Path $_.FullName -Destination $dst -Recurse -Force -ErrorAction SilentlyContinue
+                  Write-Host "Copied: $($_.Name)"
+                }
+
+                # Extract ZIP if present
+                $zipFile = "$dst\KhulaFxAdmin.zip"
+                if (Test-Path $zipFile) {
+                    Write-Host "Found ZIP, extracting..."
+                    Expand-Archive -Path $zipFile -DestinationPath $dst -Force
+                    Remove-Item -Path $zipFile -Force
+                    Write-Host "✅ ZIP extracted and removed"
+                }
+
+                # Start IIS
+                try {
+                  $secPassword = ConvertTo-SecureString $password -AsPlainText -Force
+                  $cred = New-Object System.Management.Automation.PSCredential("$vps\$username", $secPassword)
+                  $session = New-PSSession -ComputerName $vps -Credential $cred -ErrorAction Stop
+                  Invoke-Command -Session $session -ScriptBlock { net start W3SVC; Start-Sleep -Seconds 3 }
+                  Remove-PSSession $session
+                  Write-Host "✅ IIS started"
+                } catch {
+                  Write-Host "⚠️ IIS start failed: $_"
+                }
+
+                Write-Host "========================================"
+                Write-Host "Deployment Complete!"
+                Write-Host "API: https://khulafx.com/api"
