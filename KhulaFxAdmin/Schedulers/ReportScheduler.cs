@@ -9,19 +9,19 @@ namespace KhulaFxAdmin.Schedulers
     {
         private readonly ReportService _reportService;
         private readonly NotifierSettingsService _notifierSettings;
-        // private readonly TelegramNotifier _telegramNotifier;
-        // private readonly WhatsAppNotifier _whatsAppNotifier;
+        private readonly TelegramNotifier _telegramNotifier;
+        private readonly WhatsAppNotifier _whatsAppNotifier;
         public DailyReportJob(
             ReportService reportService,
             NotifierSettingsService notifierSettings
-        // TelegramNotifier telegramNotifier,
-        // WhatsAppNotifier whatsAppNotifier
+         TelegramNotifier telegramNotifier,
+         WhatsAppNotifier whatsAppNotifier
         )
         {
             _reportService = reportService;
             _notifierSettings = notifierSettings;
-            // _telegramNotifier = telegramNotifier;
-            // _whatsAppNotifier = whatsAppNotifier;
+            _telegramNotifier = telegramNotifier;
+            _whatsAppNotifier = whatsAppNotifier;
         }
         public async Task Execute(IJobExecutionContext context)
         {
@@ -30,17 +30,17 @@ namespace KhulaFxAdmin.Schedulers
                 Log.Information("Generating daily report...");
                 var message = await _reportService.GenerateDailyReportMessageAsync();
                 // Check if Telegram is enabled
-                // if (await _notifierSettings.IsNotifierEnabledAsync("Telegram"))
-                // {
-                //     await _telegramNotifier.SendToPublicChannelAsync(message);
-                //     Log.Information("Daily report sent to Telegram");
-                // }
-                // Check if WhatsApp is enabled
-                // if (await _notifierSettings.IsNotifierEnabledAsync("WhatsApp"))
-                // {
-                //     await _whatsAppNotifier.SendMessageAsync(message);
-                //     Log.Information("Daily report sent to WhatsApp");
-                // }
+                if (await _notifierSettings.IsNotifierEnabledAsync("Telegram"))
+                {
+                    await _telegramNotifier.SendToPublicChannelAsync(message);
+                    Log.Information("Daily report sent to Telegram");
+                }
+                Check if WhatsApp is enabled
+                 if (await _notifierSettings.IsNotifierEnabledAsync("WhatsApp"))
+                    {
+                        await _whatsAppNotifier.SendMessageAsync(message);
+                        Log.Information("Daily report sent to WhatsApp");
+                    }
             }
             catch (Exception ex)
             {
@@ -53,19 +53,19 @@ namespace KhulaFxAdmin.Schedulers
     {
         private readonly ReportService _reportService;
         private readonly NotifierSettingsService _notifierSettings;
-        // private readonly TelegramNotifier _telegramNotifier;
-        // private readonly WhatsAppNotifier _whatsAppNotifier;
+        private readonly TelegramNotifier _telegramNotifier;
+        private readonly WhatsAppNotifier _whatsAppNotifier;
         public WeeklyReportJob(
             ReportService reportService,
             NotifierSettingsService notifierSettings
-        // TelegramNotifier telegramNotifier,
-        // WhatsAppNotifier whatsAppNotifier
+         TelegramNotifier telegramNotifier,
+         WhatsAppNotifier whatsAppNotifier
         )
         {
             _reportService = reportService;
             _notifierSettings = notifierSettings;
-            // _telegramNotifier = telegramNotifier;
-            // _whatsAppNotifier = whatsAppNotifier;
+            _telegramNotifier = telegramNotifier;
+            _whatsAppNotifier = whatsAppNotifier;
         }
         public async Task Execute(IJobExecutionContext context)
         {
@@ -73,18 +73,18 @@ namespace KhulaFxAdmin.Schedulers
             {
                 Log.Information("Generating weekly report...");
                 var message = await _reportService.GenerateWeeklyReportMessageAsync();
-                // Check if Telegram is enabled
-                // if (await _notifierSettings.IsNotifierEnabledAsync("Telegram"))
-                // {
-                //     await _telegramNotifier.SendToPublicChannelAsync(message);
-                //     Log.Information("Weekly report sent to Telegram");
-                // }
-                // Check if WhatsApp is enabled
-                // if (await _notifierSettings.IsNotifierEnabledAsync("WhatsApp"))
-                // {
-                //     await _whatsAppNotifier.SendMessageAsync(message);
-                //     Log.Information("Weekly report sent to WhatsApp");
-                // }
+                Check if Telegram is enabled
+                 if (await _notifierSettings.IsNotifierEnabledAsync("Telegram"))
+                    {
+                        await _telegramNotifier.SendToPublicChannelAsync(message);
+                        Log.Information("Weekly report sent to Telegram");
+                    }
+                Check if WhatsApp is enabled
+                 if (await _notifierSettings.IsNotifierEnabledAsync("WhatsApp"))
+                    {
+                        await _whatsAppNotifier.SendMessageAsync(message);
+                        Log.Information("Weekly report sent to WhatsApp");
+                    }
             }
             catch (Exception ex)
             {
