@@ -7,11 +7,44 @@ pool:
 
 variables:
   - group: Deployment-Secrets
+  - name: vpsServer
+    value: '108.181.161.170'
+  - name: deployUser
+    value: 'YourVPSUser'
 
 stages:
+  - stage: Prepare
+    displayName: 'Fetch TradeMonitor DLL'
+    jobs:
+      - job: GetDLL
+        displayName: 'Download DLL from Pipeline A'
+        steps:
+          # Download the DLL artifact published by Pipeline A
+          - download: current
+            artifact: KhulaFxTradeMonitorDLL
+            displayName: 'Download KhulaFxTradeMonitor.dll'
+
+          # Copy DLL into backend project Libs folder
+          - task: PowerShell@2
+            displayName: 'Copy DLL to KhulaFxAdmin Libs'
+            inputs:
+              targetType: inline
+              script: |
+                $dllSrc = "$(Pipeline.Workspace)/KhulaFxTradeMonitorDLL/KhulaFxTradeMonitor.dll"
+                $dllDest = "$(Build.SourcesDirectory)/KhulaFxAdmin/Libs/KhulaFxTradeMonitor.dll"
+                
+                if (!(Test-Path "$(Build.SourcesDirectory)/KhulaFxAdmin/Libs")) {
+                  New-Item -ItemType Directory -Path "$(Build.SourcesDirectory)/KhulaFxAdmin/Libs" | Out-Null
+                }
+                
+                Copy-Item -Path $dllSrc -Destination $dllDest -Force
+                Write-Host "✅ DLL copied to Libs folder"
+
   - stage: Build
+    dependsOn: Prepare
     jobs:
       - job: BuildJob
+        displayName: 'Build and Publish Backend'
         steps:
           - checkout: self
 
@@ -139,5 +172,3 @@ stages:
                 Write-Host "✅ Deployment Complete!" -ForegroundColor Green
                 Write-Host "========================================" -ForegroundColor Green
                 Write-Host "API: https://khulafx.com/api" -ForegroundColor Cyan
-                
-                exit 0
