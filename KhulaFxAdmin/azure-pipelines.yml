@@ -20,42 +20,51 @@ stages:
             inputs:
               version: 8.x
 
-          # ✅ Step 1: Download the KhulaFxTradeMonitor.dll from another pipeline (Pipeline A)
-          - task: DownloadPipelineArtifact@2
-            displayName: Download KhulaFxTradeMonitor DLL (from Pipeline A)
-            inputs:
-              source: specific
-              project: "$(System.TeamProject)"
-              pipeline: "fjadula.KhulaFxTradeMonitor"       # 👈 replace with the actual pipeline name or ID
-              buildVersionToDownload: latest
-              artifact: "library"
-              targetPath: "$(Pipeline.Workspace)/libs"
+          # Step 1: Copy KhulaFxTradeMonitor.dll from local build folder
+          - script: |
+              Write-Host "Copying local KhulaFxTradeMonitor.dll..."
+              $dllSource = "$(Build.SourcesDirectory)/KhulaFxTradeMonitor/bin/Release/net8.0/KhulaFxTradeMonitor.dll"
+              $dllTargetDir = "$(Pipeline.Workspace)/libs"
+              
+              if (-Not (Test-Path $dllSource)) {
+                Write-Error "❌ DLL not found at $dllSource. Ensure KhulaFxTradeMonitor is built first."
+                exit 1
+              }
 
-          # ✅ Step 2: Inject DLL and update .csproj dynamically
+              New-Item -ItemType Directory -Force -Path $dllTargetDir | Out-Null
+              Copy-Item -Path $dllSource -Destination $dllTargetDir -Force
+              Write-Host "✅ Copied DLL to $dllTargetDir"
+            displayName: Copy Local DLL
+
+          # Step 2: Inject DLL reference dynamically
           - task: PowerShell@2
             displayName: Inject DLL and Update csproj
             inputs:
               targetType: inline
               script: |
                 $dllSource = "$(Pipeline.Workspace)/libs/KhulaFxTradeMonitor.dll"
-                $projectFile = "$(Pipeline.Workspace)/KhulaFxAdmin/KhulaFxAdmin.csproj"
-                $dllTargetDir = "$(Pipeline.Workspace)/KhulaFxAdmin"
+                $projectFile = "$(Build.SourcesDirectory)/KhulaFxAdmin/KhulaFxAdmin.csproj"
+                $dllTargetDir = "$(Build.SourcesDirectory)/KhulaFxAdmin"
 
                 Write-Host "Injecting KhulaFxTradeMonitor.dll into KhulaFxAdmin..."
+
                 if (-Not (Test-Path $dllSource)) {
-                  Write-Error "❌ DLL not found at $dllSource"
+                  Write-Error "KhulaFxTradeMonitor.dll not found at $dllSource"
                   exit 1
                 }
 
+                # Copy DLL into project folder
                 Copy-Item -Path $dllSource -Destination $dllTargetDir -Force
                 Write-Host "✅ DLL copied successfully"
 
+                # Load csproj as XML
                 [xml]$csproj = Get-Content $projectFile
                 $ns = @{msb='http://schemas.microsoft.com/developer/msbuild/2003'}
+
                 $existingRef = $csproj.Project.ItemGroup.Reference | Where-Object { $_.Include -eq "KhulaFxTradeMonitor" }
 
                 if (-not $existingRef) {
-                  Write-Host "Adding reference to KhulaFxTradeMonitor..."
+                  Write-Host "Adding Reference to KhulaFxTradeMonitor.dll in csproj..."
                   $itemGroup = $csproj.CreateElement("ItemGroup", $csproj.Project.NamespaceURI)
                   $reference = $csproj.CreateElement("Reference", $csproj.Project.NamespaceURI)
                   $reference.SetAttribute("Include", "KhulaFxTradeMonitor")
@@ -70,38 +79,32 @@ stages:
 
                   $itemGroup.AppendChild($reference) | Out-Null
                   $csproj.Project.AppendChild($itemGroup) | Out-Null
+
+                  # Save updated csproj
                   $csproj.Save($projectFile)
                   Write-Host "✅ csproj updated successfully"
                 } else {
-                  Write-Host "ℹ️ Reference already exists, skipping update."
+                  Write-Host "Reference already exists in csproj, skipping..."
                 }
 
-          # ✅ Step 3: Verify injection before building
+          # Step 3: Verify that DLL reference was injected correctly
           - task: PowerShell@2
-            displayName: Verify DLL Injection
+            displayName: Verify DLL Reference
             inputs:
               targetType: inline
               script: |
-                $dllPath = "$(Pipeline.Workspace)/KhulaFxAdmin/KhulaFxTradeMonitor.dll"
-                $csprojFile = "$(Pipeline.Workspace)/KhulaFxAdmin/KhulaFxAdmin.csproj"
+                $projectFile = "$(Build.SourcesDirectory)/KhulaFxAdmin/KhulaFxAdmin.csproj"
+                [xml]$csproj = Get-Content $projectFile
+                $ref = $csproj.Project.ItemGroup.Reference | Where-Object { $_.Include -eq "KhulaFxTradeMonitor" }
 
-                Write-Host "🔍 Verifying DLL injection..."
-                if (Test-Path $dllPath) {
-                  Write-Host "✅ Found KhulaFxTradeMonitor.dll"
-                } else {
-                  Write-Error "❌ Missing DLL in project folder!"
+                if ($null -eq $ref) {
+                  Write-Error "❌ Verification failed: KhulaFxTradeMonitor reference not found in csproj!"
                   exit 1
+                } else {
+                  Write-Host "✅ Verification passed: DLL reference exists."
                 }
 
-                $content = Get-Content $csprojFile -Raw
-                if ($content -match "KhulaFxTradeMonitor.dll") {
-                  Write-Host "✅ Reference confirmed in csproj"
-                } else {
-                  Write-Error "❌ Reference missing in csproj!"
-                  exit 1
-                }
-
-          # ✅ Step 4: Build the project
+          # Step 4: Build the main project
           - task: DotNetCoreCLI@2
             displayName: Build Release
             inputs:
@@ -109,7 +112,7 @@ stages:
               projects: KhulaFxAdmin/KhulaFxAdmin.csproj
               arguments: --configuration Release
 
-          # ✅ Step 5: Publish Release
+          # Step 5: Publish the build artifacts
           - task: DotNetCoreCLI@2
             displayName: Publish Release
             inputs:
@@ -117,14 +120,13 @@ stages:
               projects: KhulaFxAdmin/KhulaFxAdmin.csproj
               arguments: --configuration Release --output $(Build.ArtifactStagingDirectory) -p:PublishSingleFile=false
 
-          # ✅ Step 6: Publish Build Artifacts
           - task: PublishBuildArtifacts@1
             displayName: Publish Artifacts
             inputs:
               pathToPublish: $(Build.ArtifactStagingDirectory)
               artifactName: backend
 
-  # ✅ Stage 2: Deployment to VPS
+  # === DEPLOYMENT STAGE ===
   - stage: Deploy
     displayName: Deploy to VPS
     dependsOn: Build
@@ -145,41 +147,82 @@ stages:
                 $dst = "\\$vps\c$\inetpub\wwwroot\khulafx.com\api"
                 $username = "$(deployUser)"
                 $password = "$(DEPLOY_PASSWORD)"
-
-                Write-Host "========================================"
-                Write-Host "🚀 Deploying Backend to VPS..."
-                Write-Host "========================================"
-
+                
+                Write-Host "========================================" -ForegroundColor Cyan
+                Write-Host "Deploying Backend" -ForegroundColor Cyan
+                Write-Host "========================================" -ForegroundColor Cyan
+                Write-Host "Source: $src" -ForegroundColor White
+                Write-Host "VPS: $vps" -ForegroundColor White
+                Write-Host "Destination: $dst" -ForegroundColor White
+                Write-Host ""
+                
+                Write-Host "Step 1: Clearing existing connections..." -ForegroundColor Yellow
                 net use * /delete /y 2>&1 | Out-Null
                 Start-Sleep -Seconds 2
-
-                $secPassword = ConvertTo-SecureString $password -AsPlainText -Force
-                $cred = New-Object System.Management.Automation.PSCredential("$vps\$username", $secPassword)
+                Write-Host "✅ Connections cleared" -ForegroundColor Green
+                
+                Write-Host "`nStep 2: Stopping IIS..." -ForegroundColor Yellow
                 try {
+                  $secPassword = ConvertTo-SecureString $password -AsPlainText -Force
+                  $cred = New-Object System.Management.Automation.PSCredential("$vps\$username", $secPassword)
                   $session = New-PSSession -ComputerName $vps -Credential $cred -ErrorAction Stop
-                  Invoke-Command -Session $session -ScriptBlock { net stop W3SVC; Start-Sleep -Seconds 3 }
+                  Invoke-Command -Session $session -ScriptBlock { net stop W3SVC; Start-Sleep -Seconds 5 }
                   Remove-PSSession $session
+                  Write-Host "✅ IIS stopped" -ForegroundColor Green
                 } catch {
-                  Write-Host "⚠️ Could not stop IIS, continuing..."
+                  Write-Host "⚠️ IIS stop failed, continuing..." -ForegroundColor Yellow
                 }
-
+                
+                Write-Host "`nStep 3: Waiting for file locks..." -ForegroundColor Yellow
+                Start-Sleep -Seconds 5
+                
+                Write-Host "`nStep 4: Authenticating..." -ForegroundColor Yellow
                 net use "\\$vps\c$" /user:"$vps\$username" "$password" /persistent:no
-                if ($LASTEXITCODE -ne 0) {
-                  Write-Error "❌ Authentication failed"
+                if ($LASTEXITCODE -eq 0) {
+                  Write-Host "✅ Authenticated" -ForegroundColor Green
+                } else {
+                  Write-Host "❌ Authentication failed" -ForegroundColor Red
                   exit 1
                 }
+                
+                Write-Host "`nStep 5: Clearing old files..." -ForegroundColor Yellow
+                Get-ChildItem -Path $dst -Force -ErrorAction Continue | Where-Object { $_.Name -ne "web.config" } | ForEach-Object {
+                  Remove-Item -Path $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                }
+                Write-Host "✅ Old files cleared" -ForegroundColor Green
+                
+                Write-Host "`nStep 6: Copying new files..." -ForegroundColor Yellow
+                Get-ChildItem -Path $src -Force | ForEach-Object {
+                  Copy-Item -Path $_.FullName -Destination $dst -Recurse -Force -ErrorAction SilentlyContinue
+                  Write-Host "  ✅ Copied: $($_.Name)" -ForegroundColor Green
+                }
+                Write-Host "✅ Files copied" -ForegroundColor Green
+                
+                Write-Host "`nStep 7: Extracting ZIP if present..." -ForegroundColor Yellow
+                $zipFile = "$dst\KhulaFxAdmin.zip"
+                if (Test-Path $zipFile) {
+                  Write-Host "Found ZIP file, extracting..." -ForegroundColor Cyan
+                  Expand-Archive -Path $zipFile -DestinationPath $dst -Force
+                  Remove-Item -Path $zipFile -Force
+                  Write-Host "✅ ZIP extracted and removed" -ForegroundColor Green
+                } else {
+                  Write-Host "ℹ️ No ZIP file found" -ForegroundColor Cyan
+                }
+                
+                Write-Host "`nStep 8: Starting IIS..." -ForegroundColor Yellow
+                try {
+                  $secPassword = ConvertTo-SecureString $password -AsPlainText -Force
+                  $cred = New-Object System.Management.Automation.PSCredential("$vps\$username", $secPassword)
+                  $session = New-PSSession -ComputerName $vps -Credential $cred -ErrorAction Stop
+                  Invoke-Command -Session $session -ScriptBlock { net start W3SVC; Start-Sleep -Seconds 3 }
+                  Remove-PSSession $session
+                  Write-Host "✅ IIS started" -ForegroundColor Green
+                } catch {
+                  Write-Host "⚠️ IIS start failed: $_" -ForegroundColor Yellow
+                }
 
-                Write-Host "✅ Authenticated, copying new files..."
-                Get-ChildItem -Path $dst -Recurse -Force -ErrorAction SilentlyContinue | 
-                  Where-Object { $_.Name -ne "web.config" } |
-                  Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-
-                Copy-Item -Path "$src\*" -Destination $dst -Recurse -Force
-                Write-Host "✅ Files copied"
-
-                $session = New-PSSession -ComputerName $vps -Credential $cred -ErrorAction Stop
-                Invoke-Command -Session $session -ScriptBlock { net start W3SVC; Start-Sleep -Seconds 3 }
-                Remove-PSSession $session
-
-                Write-Host "✅ Deployment Complete!"
-                Write-Host "🌐 https://khulafx.com/api"
+                Write-Host ""
+                Write-Host "========================================" -ForegroundColor Green
+                Write-Host "✅ Deployment Complete!" -ForegroundColor Green
+                Write-Host "========================================" -ForegroundColor Green
+                Write-Host "API: https://khulafx.com/api" -ForegroundColor Cyan
