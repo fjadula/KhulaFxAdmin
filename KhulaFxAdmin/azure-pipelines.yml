@@ -20,30 +20,95 @@ stages:
             inputs:
               version: 8.x
 
-          # ✅ FIXED: Use existing DLL from Libs folder
+          # ✅ DEBUG: List all files to find DLL
+          - task: PowerShell@2
+            displayName: Debug - List Repository Structure
+            inputs:
+              targetType: inline
+              script: |
+                Write-Host "========================================" -ForegroundColor Cyan
+                Write-Host "Repository Structure" -ForegroundColor Cyan
+                Write-Host "========================================" -ForegroundColor Cyan
+                Write-Host "Build.SourcesDirectory: $(Build.SourcesDirectory)" -ForegroundColor Yellow
+                Write-Host ""
+                
+                Write-Host "Searching for KhulaFxTradeMonitor.dll..." -ForegroundColor Yellow
+                Get-ChildItem -Path "$(Build.SourcesDirectory)" -Recurse -Filter "KhulaFxTradeMonitor.dll" -ErrorAction SilentlyContinue | ForEach-Object {
+                  Write-Host "✅ FOUND: $($_.FullName)" -ForegroundColor Green
+                }
+                
+                Write-Host ""
+                Write-Host "Listing KhulaFxAdmin folder contents:" -ForegroundColor Yellow
+                Get-ChildItem -Path "$(Build.SourcesDirectory)" -Recurse -Directory | Where-Object { $_.Name -eq "Libs" } | ForEach-Object {
+                  Write-Host "📁 Libs folder: $($_.FullName)" -ForegroundColor Cyan
+                  Get-ChildItem -Path $_.FullName | ForEach-Object {
+                    Write-Host "  📄 $($_.Name)" -ForegroundColor White
+                  }
+                }
+
+          # ✅ FIXED: Try multiple possible paths
           - task: PowerShell@2
             displayName: Copy DLL from Libs
             inputs:
               targetType: inline
               script: |
-                Write-Host "Copying KhulaFxTradeMonitor.dll from Libs..."
-                $dllSource = "$(Build.SourcesDirectory)/KhulaFxAdmin/KhulaFxAdmin/Libs/KhulaFxTradeMonitor.dll"
-                $dllTargetDir = "$(Build.SourcesDirectory)/KhulaFxAdmin/KhulaFxAdmin"
+                Write-Host "Searching for KhulaFxTradeMonitor.dll..."
                 
-                if (-Not (Test-Path $dllSource)) {
-                  Write-Error "❌ DLL not found at $dllSource"
+                # Try different possible paths
+                $possiblePaths = @(
+                  "$(Build.SourcesDirectory)/KhulaFxAdmin/KhulaFxAdmin/Libs/KhulaFxTradeMonitor.dll",
+                  "$(Build.SourcesDirectory)/KhulaFxAdmin/Libs/KhulaFxTradeMonitor.dll",
+                  "$(Build.SourcesDirectory)/Libs/KhulaFxTradeMonitor.dll"
+                )
+                
+                $dllSource = $null
+                foreach ($path in $possiblePaths) {
+                  if (Test-Path $path) {
+                    $dllSource = $path
+                    Write-Host "✅ Found DLL at: $dllSource" -ForegroundColor Green
+                    break
+                  }
+                }
+                
+                if (-not $dllSource) {
+                  Write-Error "❌ DLL not found in any expected location. Check debug output above."
                   exit 1
                 }
-
+                
+                # Determine target directory based on where DLL was found
+                if ($dllSource -like "*KhulaFxAdmin/KhulaFxAdmin/*") {
+                  $dllTargetDir = "$(Build.SourcesDirectory)/KhulaFxAdmin/KhulaFxAdmin"
+                } else {
+                  $dllTargetDir = "$(Build.SourcesDirectory)/KhulaFxAdmin"
+                }
+                
                 Copy-Item -Path $dllSource -Destination $dllTargetDir -Force
-                Write-Host "✅ Copied DLL from Libs folder"
+                Write-Host "✅ Copied DLL to $dllTargetDir"
 
           - task: PowerShell@2
             displayName: Update csproj Reference
             inputs:
               targetType: inline
               script: |
-                $projectFile = "$(Build.SourcesDirectory)/KhulaFxAdmin/KhulaFxAdmin/KhulaFxAdmin.csproj"
+                # Find the csproj file
+                $csprojPaths = @(
+                  "$(Build.SourcesDirectory)/KhulaFxAdmin/KhulaFxAdmin/KhulaFxAdmin.csproj",
+                  "$(Build.SourcesDirectory)/KhulaFxAdmin/KhulaFxAdmin.csproj"
+                )
+                
+                $projectFile = $null
+                foreach ($path in $csprojPaths) {
+                  if (Test-Path $path) {
+                    $projectFile = $path
+                    Write-Host "✅ Found csproj at: $projectFile" -ForegroundColor Green
+                    break
+                  }
+                }
+                
+                if (-not $projectFile) {
+                  Write-Error "❌ csproj not found"
+                  exit 1
+                }
                 
                 Write-Host "Updating csproj reference..."
                 [xml]$csproj = Get-Content $projectFile
@@ -57,7 +122,7 @@ stages:
                   $reference.SetAttribute("Include", "KhulaFxTradeMonitor")
 
                   $hintPath = $csproj.CreateElement("HintPath", $csproj.Project.NamespaceURI)
-                  $hintPath.InnerText = "Libs\KhulaFxTradeMonitor.dll"
+                  $hintPath.InnerText = "KhulaFxTradeMonitor.dll"
                   $reference.AppendChild($hintPath) | Out-Null
 
                   $privateNode = $csproj.CreateElement("Private", $csproj.Project.NamespaceURI)
@@ -77,14 +142,14 @@ stages:
             displayName: Build Release
             inputs:
               command: build
-              projects: KhulaFxAdmin/KhulaFxAdmin/KhulaFxAdmin.csproj
+              projects: '**/KhulaFxAdmin.csproj'
               arguments: --configuration Release
 
           - task: DotNetCoreCLI@2
             displayName: Publish Release
             inputs:
               command: publish
-              projects: KhulaFxAdmin/KhulaFxAdmin/KhulaFxAdmin.csproj
+              projects: '**/KhulaFxAdmin.csproj'
               arguments: --configuration Release --output $(Build.ArtifactStagingDirectory) -p:PublishSingleFile=false
 
           - task: PublishBuildArtifacts@1
