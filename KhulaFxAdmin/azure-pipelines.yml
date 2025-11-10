@@ -8,10 +8,18 @@ pool:
 variables:
   - group: Deployment-Secrets
 
+  # === Configure to match Pipeline A in your Azure DevOps ===
+  - name: pipelineAProject
+    value: 'KhulaFxTrade'                 # <- update if different
+  - name: pipelineAName
+    value: 'fjadula.KhulaFxTradeMonitor'  # <- update if different
+
 stages:
   - stage: Build
+    displayName: Build
     jobs:
       - job: BuildJob
+        displayName: Build KhulaFxAdmin
         steps:
           - checkout: self
 
@@ -20,58 +28,142 @@ stages:
             inputs:
               version: 8.x
 
-          # Step: Inject KhulaFxTradeMonitor.dll dynamically and update csproj
+          # ---------------------------
+          # Download DLL artifact from Pipeline A
+          # ---------------------------
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download KhulaFxTradeMonitor DLL (from Pipeline A)'
+            inputs:
+              project: '$(pipelineAProject)'
+              pipeline: '$(pipelineAName)'
+              buildType: 'latest'
+              artifact: 'KhulaFxTradeMonitorDLL'
+              targetPath: '$(Build.SourcesDirectory)/KhulaFxAdmin/Libs'
+            # allow pipeline to continue so we can produce a clearer verification error
+            continueOnError: true
+
+          # ---------------------------
+          # Ensure Libs folder exists
+          # ---------------------------
           - task: PowerShell@2
-            displayName: Inject DLL and Update csproj
+            displayName: Ensure Libs exists
             inputs:
               targetType: inline
               script: |
-                $dllSource = "$(Pipeline.Workspace)/KhulaFxAdmin/Libs/KhulaFxTradeMonitor.dll"
-                $projectFile = "$(Pipeline.Workspace)/KhulaFxAdmin/KhulaFxAdmin.csproj"
-                $dllTargetDir = "$(Pipeline.Workspace)/KhulaFxAdmin"
+                $libs = "$(Build.SourcesDirectory)\KhulaFxAdmin\Libs"
+                if (!(Test-Path $libs)) {
+                  New-Item -ItemType Directory -Path $libs | Out-Null
+                  Write-Host "Created: $libs"
+                } else {
+                  Write-Host "Libs folder exists: $libs"
+                }
 
-                Write-Host "Injecting KhulaFxTradeMonitor.dll into KhulaFxAdmin..."
-                
-                if (-Not (Test-Path $dllSource)) {
-                  Write-Error "KhulaFxTradeMonitor.dll not found at $dllSource"
+          # ---------------------------
+          # Inject KhulaFxTradeMonitor.dll into KhulaFxAdmin and update csproj
+          # ---------------------------
+          - task: PowerShell@2
+            displayName: Inject DLL and update csproj
+            inputs:
+              targetType: inline
+              script: |
+                $dllSource = "$(Build.SourcesDirectory)\KhulaFxAdmin\Libs\KhulaFxTradeMonitor.dll"
+                $projectFile = "$(Build.SourcesDirectory)\KhulaFxAdmin\KhulaFxAdmin.csproj"
+                $dllTargetDir = "$(Build.SourcesDirectory)\KhulaFxAdmin"
+
+                Write-Host "DLL source: $dllSource"
+                Write-Host "Project file: $projectFile"
+
+                if (-Not (Test-Path $projectFile)) {
+                  Write-Error "Project file not found: $projectFile"
                   exit 1
                 }
 
-                # Copy DLL into project folder
-                Copy-Item -Path $dllSource -Destination $dllTargetDir -Force
-                Write-Host "✅ DLL copied successfully"
+                if (-Not (Test-Path $dllSource)) {
+                  Write-Warning "KhulaFxTradeMonitor.dll not found at $dllSource"
+                  Write-Warning "If Pipeline A published the artifact, check pipeline name/project and artifact name."
+                  # Do not exit here - verification step will catch missing DLL and fail
+                } else {
+                  Copy-Item -Path $dllSource -Destination $dllTargetDir -Force
+                  Write-Host "✅ DLL copied to $dllTargetDir"
+                }
 
-                # Load csproj as XML
+                # Load csproj XML
                 [xml]$csproj = Get-Content $projectFile
 
-                # Check if Reference already exists
-                $ns = @{msb='http://schemas.microsoft.com/developer/msbuild/2003'}
-                $existingRef = $csproj.Project.ItemGroup.Reference | Where-Object { $_.Include -eq "KhulaFxTradeMonitor" }
-                
+                # Check for existing Reference
+                $existingRef = $null
+                try {
+                  $existingRef = $csproj.Project.ItemGroup.Reference | Where-Object { $_.Include -eq "KhulaFxTradeMonitor" }
+                } catch {
+                  # no Reference node yet
+                }
+
                 if (-not $existingRef) {
                   Write-Host "Adding Reference to KhulaFxTradeMonitor.dll in csproj..."
-                  $itemGroup = $csproj.CreateElement("ItemGroup", $csproj.Project.NamespaceURI)
-                  $reference = $csproj.CreateElement("Reference", $csproj.Project.NamespaceURI)
+                  $ns = $csproj.Project.NamespaceURI
+                  $itemGroup = $csproj.CreateElement("ItemGroup", $ns)
+                  $reference = $csproj.CreateElement("Reference", $ns)
                   $reference.SetAttribute("Include", "KhulaFxTradeMonitor")
 
-                  $hintPath = $csproj.CreateElement("HintPath", $csproj.Project.NamespaceURI)
+                  $hintPath = $csproj.CreateElement("HintPath", $ns)
                   $hintPath.InnerText = "KhulaFxTradeMonitor.dll"
                   $reference.AppendChild($hintPath) | Out-Null
 
-                  $privateNode = $csproj.CreateElement("Private", $csproj.Project.NamespaceURI)
+                  $privateNode = $csproj.CreateElement("Private", $ns)
                   $privateNode.InnerText = "true"
                   $reference.AppendChild($privateNode) | Out-Null
 
                   $itemGroup.AppendChild($reference) | Out-Null
                   $csproj.Project.AppendChild($itemGroup) | Out-Null
 
-                  # Save the updated csproj
                   $csproj.Save($projectFile)
                   Write-Host "✅ csproj updated successfully"
                 } else {
-                  Write-Host "Reference already exists in csproj, skipping..."
+                  Write-Host "Reference already exists in csproj, skipping injection."
                 }
 
+          # ---------------------------
+          # Post-injection verification (fail the build if DLL missing or csproj not updated)
+          # ---------------------------
+          - task: PowerShell@2
+            displayName: Post-injection verification
+            inputs:
+              targetType: inline
+              script: |
+                $dllPath = "$(Build.SourcesDirectory)\KhulaFxAdmin\KhulaFxTradeMonitor.dll"
+                $projectFile = "$(Build.SourcesDirectory)\KhulaFxAdmin\KhulaFxAdmin.csproj"
+
+                Write-Host "Verifying DLL and csproj..."
+
+                $dllExists = Test-Path $dllPath
+                if ($dllExists) {
+                  Write-Host "✅ DLL found at: $dllPath"
+                } else {
+                  Write-Error "❌ DLL NOT found at: $dllPath"
+                }
+
+                # Check csproj for Reference Include="KhulaFxTradeMonitor"
+                if (-Not (Test-Path $projectFile)) {
+                  Write-Error "❌ csproj not found at $projectFile"
+                  exit 1
+                }
+
+                $projContent = Get-Content $projectFile -Raw
+                if ($projContent -match '<Reference\s+Include\s*=\s*"KhulaFxTradeMonitor"') {
+                  Write-Host "✅ csproj contains Reference to KhulaFxTradeMonitor"
+                } else {
+                  Write-Error "❌ csproj does NOT contain Reference Include=\"KhulaFxTradeMonitor\""
+                }
+
+                # If any previous Write-Error executed, the task will fail and pipeline stops
+                if (-not $dllExists) {
+                  Write-Error "Verification failed: DLL missing. Aborting build."
+                  exit 1
+                }
+
+          # ---------------------------
+          # Build project
+          # ---------------------------
           - task: DotNetCoreCLI@2
             displayName: Build Release
             inputs:
@@ -79,6 +171,9 @@ stages:
               projects: KhulaFxAdmin/KhulaFxAdmin.csproj
               arguments: --configuration Release
 
+          # ---------------------------
+          # Publish for deployment
+          # ---------------------------
           - task: DotNetCoreCLI@2
             displayName: Publish Release
             inputs:
