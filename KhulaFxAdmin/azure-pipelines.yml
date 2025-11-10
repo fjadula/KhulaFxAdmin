@@ -26,7 +26,7 @@ stages:
             inputs:
               source: specific
               project: "$(System.TeamProject)"
-              pipeline: "KhulaFxTradeMonitor"       # 👈 replace with the actual pipeline name or ID
+              pipeline: "fjadula.KhulaFxTradeMonitor"       # 👈 replace with the actual pipeline name or ID
               buildVersionToDownload: latest
               artifact: "library"
               targetPath: "$(Pipeline.Workspace)/libs"
