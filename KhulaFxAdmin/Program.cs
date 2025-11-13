@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authentication.JwtBearer;
+﻿using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
 using Quartz;
@@ -12,34 +12,36 @@ AppContext.SetSwitch("Switch.Microsoft.Data.SqlClient.UseManagedNetworkingOnWind
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services
+// ==================== SERVICES CONFIGURATION ====================
+
+// 1. Add basic services
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// Define allowed origins based on environment
+// 2. Configure CORS Policy in Services
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
     {
-        policy.WithOrigins(
-            "http://localhost:4200",
-            "https://localhost:4200",
-            "https://khulafx.com",
-            "https://www.khulafx.com",
-            "http://khulafx.com"
-        )
-        .AllowAnyMethod()
-        .AllowAnyHeader()
-        .AllowCredentials()
-        .WithExposedHeaders("Authorization");
+        policy
+            .WithOrigins(
+                "http://localhost:4200",
+                "https://localhost:4200",
+                "https://khulafx.com",
+                "https://www.khulafx.com",
+                "http://khulafx.com"
+            )
+            .AllowAnyMethod()
+            .AllowAnyHeader()
+            .AllowCredentials()
+            .WithExposedHeaders("Authorization");
     });
 });
 
-
-
-// Configure JWT authentication
-var jwtSecret = builder.Configuration["Jwt:Secret"] ?? throw new InvalidOperationException("JWT Secret not configured");
+// 3. Configure JWT Authentication
+var jwtSecret = builder.Configuration["Jwt:Secret"]
+    ?? throw new InvalidOperationException("JWT Secret not configured");
 var key = Encoding.ASCII.GetBytes(jwtSecret);
 
 builder.Services.AddAuthentication(x =>
@@ -60,46 +62,50 @@ builder.Services.AddAuthentication(x =>
     };
 });
 
-// Register services
+// 4. Register Application Services
 builder.Services.AddSingleton<NotifierSettingsService>();
 builder.Services.AddSingleton<ReportService>();
 
-// Configure Quartz for scheduled jobs
+// 5. Configure Quartz Scheduler
 builder.Services.AddQuartz(q =>
 {
     q.UseMicrosoftDependencyInjectionJobFactory();
 
-    // Daily Report Job - 11:58 PM SAST (21:58 UTC)
+    // Daily Report Job - 11:58 PM SAST
     var dailyJobKey = new JobKey("DailyReportJob");
     q.AddJob<DailyReportJob>(opts => opts.WithIdentity(dailyJobKey));
     q.AddTrigger(opts => opts
         .ForJob(dailyJobKey)
         .WithIdentity("DailyReportTrigger")
-        .WithCronSchedule("0 58 21 * * ?", x => x.InTimeZone(TimeZoneInfo.FindSystemTimeZoneById("South Africa Standard Time"))) // 11:58 PM SAST
+        .WithCronSchedule("0 58 21 * * ?", x => x.InTimeZone(TimeZoneInfo.FindSystemTimeZoneById("South Africa Standard Time")))
     );
 
-    // Weekly Report Job - Saturday 10:00 AM SAST (08:00 UTC)
+    // Weekly Report Job - Saturday 10:00 AM SAST
     var weeklyJobKey = new JobKey("WeeklyReportJob");
     q.AddJob<WeeklyReportJob>(opts => opts.WithIdentity(weeklyJobKey));
     q.AddTrigger(opts => opts
         .ForJob(weeklyJobKey)
         .WithIdentity("WeeklyReportTrigger")
-        .WithCronSchedule("0 0 8 ? * SAT", x => x.InTimeZone(TimeZoneInfo.FindSystemTimeZoneById("South Africa Standard Time"))) // Saturday 10:00 AM SAST
+        .WithCronSchedule("0 0 8 ? * SAT", x => x.InTimeZone(TimeZoneInfo.FindSystemTimeZoneById("South Africa Standard Time")))
     );
 });
 
 builder.Services.AddQuartzHostedService(q => q.WaitForJobsToComplete = true);
 
-// Configure Serilog
+// 6. Configure Serilog
 Log.Logger = new LoggerConfiguration()
     .ReadFrom.Configuration(builder.Configuration)
     .CreateLogger();
 
 builder.Host.UseSerilog();
 
+// ==================== BUILD APP ====================
 var app = builder.Build();
 
-// Configure pipeline
+// ==================== MIDDLEWARE PIPELINE CONFIGURATION ====================
+// ⚠️ ORDER MATTERS! Do NOT change this order!
+
+// 1. Development tools (these run early)
 if (app.Environment.IsDevelopment())
 {
     app.UseDeveloperExceptionPage();
@@ -107,8 +113,13 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+// 2. HTTPS Redirection
 app.UseHttpsRedirection();
+
+// 3. ✅ CORS MIDDLEWARE - MUST BE BEFORE Authentication/Authorization
 app.UseCors("AllowFrontend");
+
+// 4. Handle preflight OPTIONS requests
 app.Use(async (context, next) =>
 {
     if (context.Request.Method == "OPTIONS")
@@ -119,8 +130,18 @@ app.Use(async (context, next) =>
     }
     await next();
 });
+
+// 5. Set API base path
 app.UsePathBase("/api");
+
+// 6. Authentication
 app.UseAuthentication();
+
+// 7. Authorization
 app.UseAuthorization();
+
+// 8. Map all controller endpoints
 app.MapControllers();
+
+// 9. Run the application
 app.Run();
