@@ -60,10 +60,10 @@ namespace KhulaFxAdmin.Services
         {
             var report = await GetDailyReportAsync(date);
 
-            return $"Total trades for {report.Date}\n" +
-                   $"ITM: {report.ItmCount}\n" +
-                   $"OTM: {report.OtmCount}\n" +
-                   $"Win % rate: {report.WinRate}%";
+            return $"📊VIP signal report for {report.Date}\n" +
+                   $"✅ITM: {report.ItmCount}\n" +
+                   $"❌OTM: {report.OtmCount}\n" +
+                   $"📊Win % rate: {report.WinRate}%";
         }
 
         public async Task<string> GenerateWeeklyReportMessageAsync()
@@ -99,11 +99,10 @@ namespace KhulaFxAdmin.Services
                 var otmCount = reader.IsDBNull(2) ? 0 : reader.GetInt32(2);
                 var winRate = totalTrades > 0 ? Math.Round((decimal)itmCount / totalTrades * 100, 2) : 0;
 
-                return $"Weekly Report ({monday:yyyy-MM-dd} to {friday:yyyy-MM-dd})\n" +
-                       $"Total trades: {totalTrades}\n" +
-                       $"ITM: {itmCount}\n" +
-                       $"OTM: {otmCount}\n" +
-                       $"Win % rate: {winRate}%";
+                return $"📊Weekly VIP signal report:({monday:yyyy-MM-dd} to {friday:yyyy-MM-dd})\n" +
+                       $"✅ITM: {itmCount}\n" +
+                       $"❌OTM: {otmCount}\n" +
+                       $"📊Win % rate: {winRate}%";
             }
 
             return $"Weekly Report ({monday:yyyy-MM-dd} to {friday:yyyy-MM-dd})\nNo trades this week";

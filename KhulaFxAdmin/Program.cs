@@ -7,6 +7,8 @@ using KhulaFxAdmin.Services;
 using KhulaFxAdmin.Schedulers;
 using Serilog;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.OpenApi.Models;
+using KhulaFxTradeMonitor;
 
 AppContext.SetSwitch("Switch.Microsoft.Data.SqlClient.UseManagedNetworkingOnWindows", true);
 
@@ -17,7 +19,31 @@ var builder = WebApplication.CreateBuilder(args);
 // 1. Add basic services
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(c =>
+{
+    c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    {
+        Type = SecuritySchemeType.Http,
+        Scheme = "bearer",
+        BearerFormat = "JWT",
+        Description = "Enter your JWT token"
+    });
+
+    c.AddSecurityRequirement(new OpenApiSecurityRequirement
+    {
+        {
+            new OpenApiSecurityScheme
+            {
+                Reference = new OpenApiReference
+                {
+                    Type = ReferenceType.SecurityScheme,
+                    Id = "Bearer"
+                }
+            },
+            new string[] { }
+        }
+    });
+});
 
 // 2. Configure CORS Policy in Services
 builder.Services.AddCors(options =>
@@ -65,6 +91,10 @@ builder.Services.AddAuthentication(x =>
 // 4. Register Application Services
 builder.Services.AddSingleton<NotifierSettingsService>();
 builder.Services.AddSingleton<ReportService>();
+builder.Services.AddSingleton<KhulaFxTradeMonitor.ConfigurationManager>();
+builder.Services.AddSingleton<TelegramNotifier>();
+builder.Services.AddSingleton<WhatsAppNotifier>();
+builder.Services.AddHostedService<NotifierBackgroundService>();
 
 // 5. Configure Quartz Scheduler
 builder.Services.AddQuartz(q =>
@@ -116,6 +146,9 @@ if (app.Environment.IsDevelopment())
 // 2. HTTPS Redirection
 app.UseHttpsRedirection();
 
+// 5. Set API base path
+app.UsePathBase("/api");
+
 // 3. ✅ CORS MIDDLEWARE - MUST BE BEFORE Authentication/Authorization
 app.UseCors("AllowFrontend");
 
@@ -131,8 +164,7 @@ app.Use(async (context, next) =>
     await next();
 });
 
-// 5. Set API base path
-app.UsePathBase("/api");
+
 
 // 6. Authentication
 app.UseAuthentication();

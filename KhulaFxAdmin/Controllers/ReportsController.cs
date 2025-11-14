@@ -46,18 +46,28 @@ namespace KhulaFxAdmin.Controllers
         {
             try
             {
-                var scheduler = await _schedulerFactory.GetScheduler();
-                var jobKey = new JobKey("DailyReportJob");
+                Console.WriteLine("🔔 [TRIGGER] Daily trigger endpoint hit");
+                Log.Information("🔔 [TRIGGER] Daily trigger endpoint hit");
 
-                // Trigger the job immediately
+                var scheduler = await _schedulerFactory.GetScheduler();
+                Console.WriteLine($"🔔 [TRIGGER] Scheduler running: {scheduler.IsStarted}");
+                Log.Information("🔔 [TRIGGER] Scheduler running: {IsStarted}", scheduler.IsStarted);
+
+                var jobKey = new JobKey("DailyReportJob");
+                Console.WriteLine($"🔔 [TRIGGER] Triggering job: {jobKey.Name}");
+                Log.Information("🔔 [TRIGGER] Triggering job: {JobName}", jobKey.Name);
+
                 await scheduler.TriggerJob(jobKey);
 
-                Log.Information("Daily report job triggered manually");
+                Console.WriteLine("✅ [TRIGGER] Daily report job triggered successfully");
+                Log.Information("✅ [TRIGGER] Daily report job triggered successfully");
+
                 return Ok(new { message = "Daily report job triggered successfully", triggeredAt = DateTime.UtcNow });
             }
             catch (Exception ex)
             {
-                Log.Error(ex, "Error triggering daily report: {Message}", ex.Message);
+                Console.WriteLine($"❌ [TRIGGER] Error: {ex.Message}");
+                Log.Error(ex, "❌ [TRIGGER] Error triggering daily report: {Message}", ex.Message);
                 return StatusCode(500, new { message = "Failed to trigger daily report", error = ex.Message });
             }
         }
@@ -67,18 +77,28 @@ namespace KhulaFxAdmin.Controllers
         {
             try
             {
-                var scheduler = await _schedulerFactory.GetScheduler();
-                var jobKey = new JobKey("WeeklyReportJob");
+                Console.WriteLine("🔔 [TRIGGER] Weekly trigger endpoint hit");
+                Log.Information("🔔 [TRIGGER] Weekly trigger endpoint hit");
 
-                // Trigger the job immediately
+                var scheduler = await _schedulerFactory.GetScheduler();
+                Console.WriteLine($"🔔 [TRIGGER] Scheduler running: {scheduler.IsStarted}");
+                Log.Information("🔔 [TRIGGER] Scheduler running: {IsStarted}", scheduler.IsStarted);
+
+                var jobKey = new JobKey("WeeklyReportJob");
+                Console.WriteLine($"🔔 [TRIGGER] Triggering job: {jobKey.Name}");
+                Log.Information("🔔 [TRIGGER] Triggering job: {JobName}", jobKey.Name);
+
                 await scheduler.TriggerJob(jobKey);
 
-                Log.Information("Weekly report job triggered manually");
+                Console.WriteLine("✅ [TRIGGER] Weekly report job triggered successfully");
+                Log.Information("✅ [TRIGGER] Weekly report job triggered successfully");
+
                 return Ok(new { message = "Weekly report job triggered successfully", triggeredAt = DateTime.UtcNow });
             }
             catch (Exception ex)
             {
-                Log.Error(ex, "Error triggering weekly report: {Message}", ex.Message);
+                Console.WriteLine($"❌ [TRIGGER] Error: {ex.Message}");
+                Log.Error(ex, "❌ [TRIGGER] Error triggering weekly report: {Message}", ex.Message);
                 return StatusCode(500, new { message = "Failed to trigger weekly report", error = ex.Message });
             }
         }
